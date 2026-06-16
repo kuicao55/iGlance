@@ -30,6 +30,9 @@ cp .build/release/iGlance iGlance.app/Contents/MacOS/
 # Copy assets (resource bundle emitted by SwiftPM)
 cp -R .build/release/iGlance_iGlance.bundle iGlance.app/Contents/Resources/ 2>/dev/null || true
 
+# Copy app icon (Liquid Glass)
+cp Assets/AppIcon.icns iGlance.app/Contents/Resources/AppIcon.icns
+
 # Create Info.plist
 cat > iGlance.app/Contents/Info.plist << 'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -41,7 +44,9 @@ cat > iGlance.app/Contents/Info.plist << 'EOF'
     <key>CFBundleExecutable</key>
     <string>iGlance</string>
     <key>CFBundleIconFile</key>
-    <string></string>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.kui.iGlance</string>
     <key>CFBundleInfoDictionaryVersion</key>
