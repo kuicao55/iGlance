@@ -92,3 +92,13 @@ echo "If the menu bar icon doesn't appear immediately:"
 echo "  1. Open System Settings -> Menu Bar"
 echo "  2. Add iGlance to the always-visible items"
 echo "  3. Or click the date/time to reveal hidden menu bar icons"
+
+# Unregister the project-root dev copy from Launch Services so it doesn't
+# appear as a duplicate of /Applications/iGlance.app in Launchpad. macOS
+# re-registers any .app path automatically every time we write the bundle,
+# so this has to be the last step. If lsregister isn't present (rare) skip
+# silently — the build itself already succeeded.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+if [ -x "$LSREGISTER" ]; then
+    "$LSREGISTER" -u "$PWD/iGlance.app" 2>/dev/null || true
+fi

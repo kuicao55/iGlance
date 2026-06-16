@@ -1,5 +1,7 @@
 .build/
 dist/
 iGlance.app/
+iGlance.app.zip
 .DS_Store
 *.app
+*.app.zip
