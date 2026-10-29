@@ -3,6 +3,7 @@ import SwiftUI
 struct SectionSwitcherButton: View {
     let section: AppSection
     let isSelected: Bool
+    var showsBadge: Bool = false
     let namespace: Namespace.ID
     let action: () -> Void
 
@@ -14,6 +15,15 @@ struct SectionSwitcherButton: View {
                 Image(systemName: section.sfSymbolName)
                     .font(.system(size: 18, weight: .semibold))
                     .frame(height: 20)
+                    .overlay(alignment: .topTrailing) {
+                        if showsBadge {
+                            Circle()
+                                .fill(.orange)
+                                .frame(width: 6, height: 6)
+                                .offset(x: 3, y: -2)
+                                .accessibilityHidden(true)
+                        }
+                    }
 
                 Text(section.displayName)
                     .font(.caption)

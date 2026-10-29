@@ -13,6 +13,10 @@ final class ServicesStore: ObservableObject {
     @Published private(set) var isPolling = false
     @Published var lastActionError: String?
 
+    /// The Add / Edit Service page currently open, if any. It lives here so the
+    /// page and its draft survive the popover closing and section switches.
+    @Published private(set) var editor: ServiceEditorModel?
+
     private let client: ServiceClient
     private let launcher: ServiceLauncher
     private let tokenStore: ServiceTokenStoring
@@ -60,6 +64,21 @@ final class ServicesStore: ObservableObject {
 
     func hasToken(for id: UUID) -> Bool {
         tokenStore.token(for: id)?.isEmpty == false
+    }
+
+    // MARK: - Editor
+
+    func beginAddingService() {
+        editor = ServiceEditorModel(mode: .add, binding: nil)
+    }
+
+    func beginEditingService(id: UUID) {
+        guard let binding = binding(for: id) else { return }
+        editor = ServiceEditorModel(mode: .edit(id), binding: binding)
+    }
+
+    func closeEditor() {
+        editor = nil
     }
 
     // MARK: - Bindings
@@ -166,6 +185,9 @@ final class ServicesStore: ObservableObject {
         memoryHistory.removeValue(forKey: id)
         lastPollAt.removeValue(forKey: id)
         inFlight.remove(id)
+        if editor?.editingID == id {
+            editor = nil
+        }
         persist()
     }
 

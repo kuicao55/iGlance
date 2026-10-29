@@ -2,21 +2,16 @@ import SwiftUI
 
 struct ServicesView: View {
     @ObservedObject var servicesStore: ServicesStore
-    @State private var editorTarget: EditorTarget?
 
-    private enum EditorTarget: Identifiable {
-        case add
-        case edit(ServiceBinding)
-
-        var id: String {
-            switch self {
-            case .add: return "add"
-            case .edit(let binding): return binding.id.uuidString
-            }
+    var body: some View {
+        if let editor = servicesStore.editor {
+            ServiceEditorView(model: editor, servicesStore: servicesStore)
+        } else {
+            list
         }
     }
 
-    var body: some View {
+    private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Design.Spacing.section) {
                 header
@@ -40,7 +35,7 @@ struct ServicesView: View {
                                 onPause: { servicesStore.perform(.pause, bindingID: binding.id) },
                                 onResume: { servicesStore.perform(.resume, bindingID: binding.id) },
                                 onToggle: { servicesStore.perform(.toggle, bindingID: binding.id) },
-                                onEdit: { editorTarget = .edit(binding) },
+                                onEdit: { servicesStore.beginEditingService(id: binding.id) },
                                 onDelete: { servicesStore.deleteService(id: binding.id) }
                             )
                         }
@@ -50,14 +45,6 @@ struct ServicesView: View {
                 footer
             }
             .padding(Design.Spacing.page)
-        }
-        .sheet(item: $editorTarget) { target in
-            switch target {
-            case .add:
-                ServiceEditorView(servicesStore: servicesStore, existing: nil)
-            case .edit(let binding):
-                ServiceEditorView(servicesStore: servicesStore, existing: binding)
-            }
         }
     }
 
@@ -74,7 +61,7 @@ struct ServicesView: View {
             Spacer()
 
             Button {
-                editorTarget = .add
+                servicesStore.beginAddingService()
             } label: {
                 Image(systemName: "plus")
                     .font(.system(size: 13, weight: .semibold))
@@ -105,7 +92,7 @@ struct ServicesView: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button("Add Service") {
-                    editorTarget = .add
+                    servicesStore.beginAddingService()
                 }
                 .controlSize(.small)
                 .padding(.top, 2)

@@ -2,11 +2,7 @@ import SwiftUI
 
 struct SectionSwitcherView: View {
     @Binding var activeSection: AppSection
-    let isUpdateActive: Bool
-    let updateIsBusy: Bool
     let hasUpdate: Bool
-    let onUpdate: () -> Void
-    let onSectionSelect: (AppSection) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var selectionNamespace
@@ -21,19 +17,12 @@ struct SectionSwitcherView: View {
             ForEach(AppSection.allCases, id: \.self) { section in
                 SectionSwitcherButton(
                     section: section,
-                    isSelected: !isUpdateActive && activeSection == section,
+                    isSelected: activeSection == section,
+                    showsBadge: section == .settings && hasUpdate,
                     namespace: selectionNamespace,
                     action: { select(section) }
                 )
             }
-
-            UpdateTabButton(
-                isSelected: isUpdateActive,
-                isBusy: updateIsBusy,
-                hasUpdate: hasUpdate,
-                namespace: selectionNamespace,
-                action: onUpdate
-            )
         }
         .frame(maxWidth: .infinity)
         .padding(4)
@@ -51,10 +40,6 @@ struct SectionSwitcherView: View {
     }
 
     private func select(_ section: AppSection) {
-        // Let the parent dismiss the update panel even when the tapped tab is
-        // already the active section.
-        onSectionSelect(section)
-
         guard section != activeSection else { return }
 
         if reduceMotion {

@@ -2,29 +2,15 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+/// Add / Edit Service, shown as a page inside the Services pane.
+///
+/// It is deliberately not a sheet: sheets attached to a transient popover get
+/// orphaned when the popover closes, which left the pane modal and dead. As a
+/// page with a store-owned draft, the form also survives closing and reopening
+/// the popover.
 struct ServiceEditorView: View {
+    @ObservedObject var model: ServiceEditorModel
     @ObservedObject var servicesStore: ServicesStore
-    let existing: ServiceBinding?
-
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var name = ""
-    @State private var startCommand = ""
-    @State private var token = ""
-    @State private var removesStoredToken = false
-    @State private var refreshSeconds: Double = 5
-    @State private var approved = true
-    @State private var manifestLine = ""
-    @State private var parsedManifest: ServiceManifest?
-    @State private var didLoad = false
-    @State private var isTesting = false
-    @State private var testResult: TestResult?
-    @State private var showsManifest = false
-
-    private enum TestResult: Equatable {
-        case success(String)
-        case failure(String)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -41,30 +27,35 @@ struct ServiceEditorView: View {
                     warnings
                     testResultBox
                 }
-                .padding(16)
+                .padding(Design.Spacing.page)
             }
             Divider()
             toolbar
         }
-        .frame(width: 430, height: 540)
-        .onAppear(perform: loadIfNeeded)
-        .onChange(of: startCommand) { _, newValue in
-            guard let existing, newValue != existing.startCommand else { return }
+        .onChange(of: model.startCommand) { _, newValue in
+            guard let existing = existingBinding, newValue != existing.startCommand else { return }
             // A changed command must be re-approved before iGlance will run it.
-            approved = false
-            parsedManifest = nil
+            model.approved = false
+            model.parsedManifest = nil
         }
-        .onChange(of: token) { _, newValue in
+        .onChange(of: model.token) { _, newValue in
             if !newValue.isEmpty {
-                removesStoredToken = false
+                model.removesStoredToken = false
             }
         }
     }
 
+    private var existingBinding: ServiceBinding? {
+        guard let id = model.editingID else { return nil }
+        return servicesStore.binding(for: id)
+    }
+
+    // MARK: - Chrome
+
     private var header: some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(existing == nil ? "Add Service" : "Edit Service")
+                Text(model.isEditing ? "Edit Service" : "Add Service")
                     .font(.headline)
                 Text("Tokens are stored in the macOS Keychain")
                     .font(.caption2)
@@ -72,7 +63,7 @@ struct ServiceEditorView: View {
             }
             Spacer()
             Button {
-                dismiss()
+                servicesStore.closeEditor()
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))
@@ -81,7 +72,7 @@ struct ServiceEditorView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Close")
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.Spacing.page)
         .padding(.vertical, 12)
     }
 
@@ -90,7 +81,7 @@ struct ServiceEditorView: View {
     private var nameField: some View {
         VStack(alignment: .leading, spacing: 4) {
             fieldLabel("Name")
-            TextField("Gofer", text: $name)
+            TextField("Gofer", text: $model.name)
                 .textFieldStyle(.roundedBorder)
         }
     }
@@ -108,7 +99,7 @@ struct ServiceEditorView: View {
                 .foregroundStyle(.tint)
             }
 
-            TextField("Command to run", text: $startCommand, axis: .vertical)
+            TextField("Command to run", text: $model.startCommand, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(.system(size: 11, design: .monospaced))
                 .lineLimit(2...4)
@@ -126,7 +117,7 @@ struct ServiceEditorView: View {
     private var tokenField: some View {
         VStack(alignment: .leading, spacing: 4) {
             fieldLabel("API token (optional)")
-            SecureField(storedToken ? "Stored in Keychain — leave blank to keep" : "Token value", text: $token)
+            SecureField(storedToken ? "Stored in Keychain — leave blank to keep" : "Token value", text: $model.token)
                 .textFieldStyle(.roundedBorder)
 
             HStack(spacing: 8) {
@@ -137,23 +128,23 @@ struct ServiceEditorView: View {
                 if storedToken {
                     Spacer()
 
-                    if removesStoredToken {
+                    if model.removesStoredToken {
                         Button("Undo removal") {
-                            removesStoredToken = false
+                            model.removesStoredToken = false
                         }
                         .buttonStyle(.plain)
                         .font(.caption2)
                         .foregroundStyle(.tint)
-                    } else if token.isEmpty {
+                    } else if model.token.isEmpty {
                         Button("Remove stored token") {
-                            removesStoredToken = true
+                            model.removesStoredToken = true
                         }
                         .buttonStyle(.plain)
                         .font(.caption2)
                         .foregroundStyle(.orange)
                     } else {
                         Button("Keep stored token") {
-                            token = ""
+                            model.token = ""
                         }
                         .buttonStyle(.plain)
                         .font(.caption2)
@@ -166,22 +157,22 @@ struct ServiceEditorView: View {
 
     private var refreshField: some View {
         HStack(spacing: 8) {
-            Text("Refresh every \(Int(refreshSeconds), format: .number)s")
+            Text("Refresh every \(Int(model.refreshSeconds), format: .number)s")
                 .font(.caption)
             Spacer()
-            Stepper("Refresh interval", value: $refreshSeconds, in: 2...60, step: 1)
+            Stepper("Refresh interval", value: $model.refreshSeconds, in: 2...60, step: 1)
                 .labelsHidden()
         }
     }
 
     private var approvalToggle: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Toggle("Allow iGlance to run this command and control the service", isOn: $approved)
+            Toggle("Allow iGlance to run this command and control the service", isOn: $model.approved)
                 .font(.caption)
                 .toggleStyle(.switch)
                 .controlSize(.small)
 
-            if !approved {
+            if !model.approved {
                 Text("Start, Pause, Resume, Stop, and Test Start stay disabled until this is on.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
@@ -190,14 +181,14 @@ struct ServiceEditorView: View {
     }
 
     private var manifestSection: some View {
-        DisclosureGroup(isExpanded: $showsManifest) {
+        DisclosureGroup(isExpanded: $model.showsManifest) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Paste an IGLANCE_SERVICE_MANIFEST line (or just its JSON) when the start command can't print one.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                TextField("IGLANCE_SERVICE_MANIFEST {…}", text: $manifestLine, axis: .vertical)
+                TextField("IGLANCE_SERVICE_MANIFEST {…}", text: $model.manifestLine, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.system(size: 10, design: .monospaced))
                     .lineLimit(3...5)
@@ -208,7 +199,7 @@ struct ServiceEditorView: View {
                 HStack(spacing: 8) {
                     Button("Use Manifest", action: applyManifestLine)
                         .controlSize(.small)
-                    if let parsedManifest {
+                    if let parsedManifest = model.parsedManifest {
                         Text("\(parsedManifest.service.id) · \(parsedManifest.baseURL.absoluteString)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -216,7 +207,7 @@ struct ServiceEditorView: View {
                     }
                 }
 
-                if let existing, parsedManifest == nil, let baseURL = existing.baseURL {
+                if let existing = existingBinding, model.parsedManifest == nil, let baseURL = existing.baseURL {
                     Text("Cached: \(baseURL.absoluteString) · \(existing.endpoints?.count ?? 0) endpoints")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -236,14 +227,14 @@ struct ServiceEditorView: View {
             warning("This is not a loopback address (\(baseURL.absoluteString)). Plain HTTP to another host is not recommended.")
         }
 
-        if existing != nil, existing?.startCommandApproved != true, approved {
+        if let existing = existingBinding, !existing.startCommandApproved, model.approved {
             warning("Only enable this if you trust the command above.")
         }
     }
 
     @ViewBuilder
     private var testResultBox: some View {
-        if let testResult {
+        if let testResult = model.testResult {
             switch testResult {
             case .success(let message):
                 resultRow(message, icon: "checkmark.circle.fill", tint: .green)
@@ -270,7 +261,7 @@ struct ServiceEditorView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            if isTesting {
+            if model.isTesting {
                 ProgressView()
                     .controlSize(.mini)
             }
@@ -278,18 +269,18 @@ struct ServiceEditorView: View {
             Button("Test Start") {
                 runTestStart()
             }
-            .disabled(isTesting || startCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !approved)
+            .disabled(model.isTesting || model.trimmedCommand.isEmpty || !model.approved)
             .help("Run the start command and read the manifest")
 
             Button("Test Connection") {
                 runTestConnection()
             }
-            .disabled(isTesting || effectiveBaseURL == nil)
+            .disabled(model.isTesting || effectiveBaseURL == nil)
 
             Spacer()
 
             Button("Cancel") {
-                dismiss()
+                servicesStore.closeEditor()
             }
 
             Button("Save") {
@@ -298,22 +289,11 @@ struct ServiceEditorView: View {
             .keyboardShortcut(.defaultAction)
         }
         .controlSize(.small)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Design.Spacing.page)
         .padding(.vertical, 12)
     }
 
-    // MARK: - Load / save
-
-    private func loadIfNeeded() {
-        guard !didLoad else { return }
-        didLoad = true
-        guard let existing else { return }
-
-        name = existing.name
-        startCommand = existing.startCommand
-        refreshSeconds = existing.refreshSeconds
-        approved = existing.startCommandApproved
-    }
+    // MARK: - Actions
 
     private func chooseStartScript() {
         let panel = NSOpenPanel()
@@ -326,23 +306,20 @@ struct ServiceEditorView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let quoted = "'" + url.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        if startCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            startCommand = quoted
+        if model.trimmedCommand.isEmpty {
+            model.startCommand = quoted
         } else {
-            startCommand += " " + quoted
+            model.startCommand += " " + quoted
         }
     }
 
     private func save() {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedCommand = startCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard !trimmedName.isEmpty else {
-            testResult = .failure("A name is required.")
+        guard !model.trimmedName.isEmpty else {
+            model.testResult = .failure("A name is required.")
             return
         }
-        guard !trimmedCommand.isEmpty else {
-            testResult = .failure("A start command is required.")
+        guard !model.trimmedCommand.isEmpty else {
+            model.testResult = .failure("A start command is required.")
             return
         }
 
@@ -350,90 +327,90 @@ struct ServiceEditorView: View {
         do {
             manifest = try manifestForSaving()
         } catch {
-            testResult = .failure(error.localizedDescription)
+            model.testResult = .failure(error.localizedDescription)
             return
         }
 
-        if let existing {
+        if let id = model.editingID {
             servicesStore.updateService(
-                id: existing.id,
-                name: trimmedName,
-                startCommand: trimmedCommand,
-                refreshSeconds: refreshSeconds,
-                startCommandApproved: approved,
+                id: id,
+                name: model.trimmedName,
+                startCommand: model.trimmedCommand,
+                refreshSeconds: model.refreshSeconds,
+                startCommandApproved: model.approved,
                 token: tokenOverride,
                 manifest: manifest
             )
         } else {
             let binding = servicesStore.addService(
-                name: trimmedName,
-                startCommand: trimmedCommand,
-                refreshSeconds: refreshSeconds,
+                name: model.trimmedName,
+                startCommand: model.trimmedCommand,
+                refreshSeconds: model.refreshSeconds,
                 token: tokenOverride,
-                startCommandApproved: approved,
+                startCommandApproved: model.approved,
                 manifest: manifest
             )
             guard binding != nil else {
-                testResult = .failure(servicesStore.lastActionError ?? "The service could not be saved.")
+                model.testResult = .failure(servicesStore.lastActionError ?? "The service could not be saved.")
                 return
             }
         }
 
-        dismiss()
+        servicesStore.closeEditor()
     }
 
     private func manifestForSaving() throws -> ServiceManifest? {
-        if !manifestLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !model.manifestLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return try parseManifestInput()
         }
-        return parsedManifest
+        return model.parsedManifest
     }
 
     // MARK: - Tests
 
     private func runTestStart() {
-        testResult = nil
-        isTesting = true
+        model.testResult = nil
+        model.isTesting = true
 
         Task {
             do {
-                let manifest = try await servicesStore.testStart(command: startCommand)
+                let manifest = try await servicesStore.testStart(command: model.startCommand)
                 await MainActor.run {
-                    parsedManifest = manifest
+                    model.parsedManifest = manifest
                     let version = manifest.service.version.map { " \($0)" } ?? ""
-                    testResult = .success(
+                    model.testResult = .success(
                         "Manifest received from \(manifest.service.name)\(version): "
                         + "\(manifest.baseURL.absoluteString), \(manifest.endpoints.count) endpoints."
                     )
-                    isTesting = false
+                    model.isTesting = false
                 }
             } catch {
                 await MainActor.run {
-                    testResult = .failure(error.localizedDescription)
-                    isTesting = false
+                    model.testResult = .failure(error.localizedDescription)
+                    model.isTesting = false
                 }
             }
         }
     }
 
     private func runTestConnection() {
-        testResult = nil
+        model.testResult = nil
 
         guard let baseURL = effectiveBaseURL else {
-            testResult = .failure("No base URL yet — run Test Start or paste a manifest first.")
+            model.testResult = .failure("No base URL yet — run Test Start or paste a manifest first.")
             return
         }
 
-        let manifest = parsedManifest ?? (try? parseManifestInput())
-        let endpoints = manifest?.endpoints ?? existing?.endpoints ?? [:]
-        let auth = manifest?.auth ?? existing?.auth
+        let manifest = model.parsedManifest ?? (try? parseManifestInput())
+        let endpoints = manifest?.endpoints ?? existingBinding?.endpoints ?? [:]
+        let auth = manifest?.auth ?? existingBinding?.auth
 
         guard endpoints["status"] != nil else {
-            testResult = .failure("No status endpoint is known yet. Run Test Start or paste a manifest.")
+            model.testResult = .failure("No status endpoint is known yet. Run Test Start or paste a manifest.")
             return
         }
 
-        isTesting = true
+        model.isTesting = true
         Task {
             do {
                 let status = try await servicesStore.testConnection(
@@ -441,24 +418,24 @@ struct ServiceEditorView: View {
                     endpoints: endpoints,
                     auth: auth,
                     tokenOverride: tokenOverride,
-                    storedTokenFor: existing?.id
+                    storedTokenFor: model.editingID
                 )
                 await MainActor.run {
                     let state = ServiceState.from(status)
                     let memory = status.memory.map { memory -> String in
                         memory.available ? Formatters.formatByteCount(memory.totalRssBytes) : "—"
                     } ?? "—"
-                    testResult = .success(
+                    model.testResult = .success(
                         "Connected: \(state.label)"
                         + (status.pid.map { ", pid \($0)" } ?? "")
                         + ", memory \(memory)."
                     )
-                    isTesting = false
+                    model.isTesting = false
                 }
             } catch {
                 await MainActor.run {
-                    testResult = .failure(error.localizedDescription)
-                    isTesting = false
+                    model.testResult = .failure(error.localizedDescription)
+                    model.isTesting = false
                 }
             }
         }
@@ -467,21 +444,21 @@ struct ServiceEditorView: View {
     private func applyManifestLine() {
         do {
             guard let manifest = try parseManifestInput() else {
-                testResult = .failure("Paste a manifest line first.")
+                model.testResult = .failure("Paste a manifest line first.")
                 return
             }
-            parsedManifest = manifest
-            testResult = .success(
+            model.parsedManifest = manifest
+            model.testResult = .success(
                 "Manifest loaded: \(manifest.service.name) \(manifest.service.version ?? ""), "
                 + "\(manifest.baseURL.absoluteString)."
             )
         } catch {
-            testResult = .failure(error.localizedDescription)
+            model.testResult = .failure(error.localizedDescription)
         }
     }
 
     private func parseManifestInput() throws -> ServiceManifest? {
-        let value = manifestLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = model.manifestLine.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
 
         if value.hasPrefix("{") {
@@ -493,45 +470,45 @@ struct ServiceEditorView: View {
     // MARK: - Helpers
 
     private var storedToken: Bool {
-        guard let existing else { return false }
-        return servicesStore.hasToken(for: existing.id)
+        guard let id = model.editingID else { return false }
+        return servicesStore.hasToken(for: id)
     }
 
     /// `nil` keeps the stored token, `""` removes it, any other value replaces it.
     private var tokenOverride: String? {
-        guard existing != nil else {
-            return token.isEmpty ? nil : token
+        guard model.editingID != nil else {
+            return model.token.isEmpty ? nil : model.token
         }
-        if !token.isEmpty {
-            return token
+        if !model.token.isEmpty {
+            return model.token
         }
-        return removesStoredToken ? "" : nil
+        return model.removesStoredToken ? "" : nil
     }
 
     private var tokenHint: String {
         if storedToken {
-            if removesStoredToken {
+            if model.removesStoredToken {
                 return "The stored token will be removed on save."
             }
-            if !token.isEmpty {
+            if !model.token.isEmpty {
                 return "The new token will replace the stored one."
             }
             return "A token is stored in the Keychain."
         }
 
-        return token.isEmpty
+        return model.token.isEmpty
             ? "Leave empty if the service doesn't need a token."
             : "The token will be stored in the Keychain."
     }
 
     private var effectiveBaseURL: URL? {
-        if let parsedManifest {
+        if let parsedManifest = model.parsedManifest {
             return parsedManifest.baseURL
         }
         if let pasted = try? parseManifestInput() {
             return pasted.baseURL
         }
-        return existing?.baseURL
+        return existingBinding?.baseURL
     }
 
     private var fieldBackground: some View {

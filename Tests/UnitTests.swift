@@ -13,6 +13,12 @@ class ModelTests: XCTestCase {
         }
     }
 
+    func testSettingsIsAFullSection() {
+        XCTAssertTrue(AppSection.allCases.contains(.settings))
+        XCTAssertEqual(AppSection.settings.displayName, "Settings")
+        XCTAssertFalse(AppSection.settings.sfSymbolName.isEmpty)
+    }
+
     func testCPUSnapshotDefaults() {
         let cpu = CPUSnapshot.unavailable
         XCTAssertEqual(cpu.usage, 0)
@@ -771,6 +777,58 @@ class ServicesStoreTests: XCTestCase {
 
         XCTAssertEqual(store.runtime(for: binding.id).state, .offline)
         XCTAssertNotNil(store.lastActionError)
+    }
+
+    func testEditorKeepsDraftUntilItIsClosed() {
+        let store = makeStore()
+
+        store.beginAddingService()
+        XCTAssertNotNil(store.editor)
+        store.editor?.name = "Gofer"
+        store.editor?.startCommand = "~/Applications/Gofer/start-gofer.sh start --manifest"
+
+        // Nothing here closes the editor — like the popover closing and
+        // reopening, the draft must still be there.
+        XCTAssertEqual(store.editor?.name, "Gofer")
+        XCTAssertFalse(store.editor?.isEditing ?? true)
+
+        store.closeEditor()
+        XCTAssertNil(store.editor)
+    }
+
+    func testEditingPrefillsFromBinding() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Gofer",
+            startCommand: "gofer start --manifest",
+            refreshSeconds: 9,
+            token: nil,
+            startCommandApproved: false
+        )!
+
+        store.beginEditingService(id: binding.id)
+
+        XCTAssertEqual(store.editor?.editingID, binding.id)
+        XCTAssertEqual(store.editor?.name, "Gofer")
+        XCTAssertEqual(store.editor?.startCommand, "gofer start --manifest")
+        XCTAssertEqual(store.editor?.refreshSeconds, 9)
+        XCTAssertFalse(store.editor?.approved ?? true)
+    }
+
+    func testDeletingBindingClosesItsEditor() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Gofer",
+            startCommand: "gofer start --manifest",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true
+        )!
+
+        store.beginEditingService(id: binding.id)
+        store.deleteService(id: binding.id)
+
+        XCTAssertNil(store.editor)
     }
 
     func testChangingCommandClearsDiscovery() throws {

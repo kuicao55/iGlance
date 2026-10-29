@@ -1,11 +1,13 @@
 import AppKit
 import SwiftUI
+import Combine
 
 class PopoverController: NSObject {
     private let popover: NSPopover
     private let environment: AppEnvironment
     private(set) var isShown = false
     private var outsideClickMonitor: Any?
+    private var cancellables = Set<AnyCancellable>()
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -14,6 +16,7 @@ class PopoverController: NSObject {
         super.init()
 
         setupPopover()
+        observeServiceEditor()
     }
 
     private func setupPopover() {
@@ -39,13 +42,39 @@ class PopoverController: NSObject {
             environment.servicesStore.startPolling()
         }
         Task { await environment.updateStore.checkIfNeeded() }
+
+        applyInteractionBehavior()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.appearance = NSApp.effectiveAppearance
         popover.contentViewController?.view.window?.isOpaque = false
         popover.contentViewController?.view.window?.backgroundColor = .clear
         isShown = true
         environment.appStore.popoverDidOpen()
-        installOutsideClickMonitor()
+        applyInteractionBehavior()
+    }
+
+    /// While the service editor is open the popover has to survive a trip to
+    /// another app (to copy a command or token), so it stops closing on outside
+    /// clicks. The menu bar icon still toggles it closed.
+    private func observeServiceEditor() {
+        environment.servicesStore.$editor
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.applyInteractionBehavior()
+            }
+            .store(in: &cancellables)
+    }
+
+    private func applyInteractionBehavior() {
+        let isEditing = environment.servicesStore.editor != nil
+        popover.behavior = isEditing ? .applicationDefined : .transient
+        guard isShown else { return }
+
+        if isEditing {
+            removeOutsideClickMonitor()
+        } else if outsideClickMonitor == nil {
+            installOutsideClickMonitor()
+        }
     }
 
     func close() {

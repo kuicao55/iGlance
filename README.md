@@ -53,16 +53,16 @@ Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no d
 - **Template-rendered** — automatically adapts to Light / Dark menu bar
 - **Click to open** — popover anchors directly under the menu bar icon
 
-### 🔄 Self-Update
-- **One-click update check** — reads the latest GitHub release and compares versions
-- **In-place install** — downloads `iGlance.app.zip`, verifies its bundle ID and code signature, swaps the app, and relaunches
-- **Safe swap** — keeps a backup and restores the previous app if copying fails
-- Checked at most once every 6 hours when the popover opens
+### ⚙️ Settings
+- **Software Update** — reads the latest GitHub release, shows the notes, and installs in place after verifying the bundle's identity and signature (with a rollback copy)
+- **Orange badge** on the Settings tab when a newer release exists
+- **Quit iGlance** — a visible exit button (⌘Q works there too); sleep assertions are released on the way out
+- Update checks run at most once every 6 hours when the popover opens
 
 ### 🪟 The Look
 - Liquid Glass surfaces on macOS 26, with a material fallback on macOS 14–15
 - 400 × 545 fixed-size popover, one consistent 16pt padding rhythm
-- Monitor, Status, Services, and Update share one segmented glass bar
+- Monitor, Status, Services, and Settings share one segmented glass bar
 - 3D card flips, a morphing tab selection, and Reduce Motion support
 - 2-second refresh interval, automatic cleanup of power assertions on quit
 
@@ -83,7 +83,7 @@ open /Applications/iGlance.app
 
 > First launch: macOS may ask you to confirm opening an app from the internet. Click **Open**. Releases are notarized when published with the Developer ID flow; see [docs/SIGNING.md](docs/SIGNING.md).
 
-Once installed, open the popover and click the **Update** tab at the right of the segmented bar. iGlance downloads the latest release, verifies it, replaces itself, and relaunches.
+Once installed, open the popover and click **Settings** at the right of the segmented bar, then **Install Update**. iGlance downloads the latest release, verifies it, replaces itself, and relaunches.
 
 ### Build from source
 
@@ -119,10 +119,10 @@ instructions: [docs/SIGNING.md](docs/SIGNING.md).
 
 1. Launch iGlance — the eye icon appears in your menu bar
 2. **Click it** to open the popover
-3. Switch panes with the segmented bar at the top: **Monitor** / **Status** / **Services** / **Update**
+3. Switch panes with the segmented bar at the top: **Monitor** / **Status** / **Services** / **Settings**
 4. In **Monitor**, click any card to flip it to its detail side; click again to flip back
 5. In **Services**, click **+** to bind a headless service — see [Binding a service](#-binding-a-service-step-by-step)
-6. Click **Update** to check GitHub releases and install an update in place
+6. In **Settings**, check GitHub releases, install an update in place, or quit iGlance
 7. The menu bar icon's arc fills as your system load increases
 
 > The menu bar icon lives under the date/time by default. Drag it out, or add it to *Always Shown* via **System Settings → Menu Bar**.
@@ -138,7 +138,12 @@ manifest the command prints once the service is ready.
 ### 1. Open the editor
 
 Popover → **Services** → **+** in the top-right corner (or **Add Service** on
-the empty state). The editor sheet opens.
+the empty state). The editor opens in the pane itself.
+
+> The editor is a page, not a sheet, so it behaves well while you gather
+> information: switching to another app to copy a command no longer dismisses
+> the popover, and if it does close, reopening iGlance brings you back to the
+> same page with everything you typed still there.
 
 ### 2. Fill in the fields
 
@@ -273,7 +278,7 @@ Sources/iGlance/
 
 ## 🧪 Verified
 
-`swift test` runs the unit suite (83 tests).
+`swift test` runs the unit suite (87 tests).
 
 - ✅ Build & launch
 - ✅ Menu bar presence (LSUIElement)
@@ -283,6 +288,7 @@ Sources/iGlance/
 - ✅ Sleep assertion toggle + cleanup
 - ✅ Service manifest parsing, 401 / connection-failure handling, memory decoding
 - ✅ Service start/stop/pause/resume against the `iglance.service.v1` protocol
+- ✅ Add / Edit Service draft survives closing the popover and switching sections
 - ✅ GitHub release decoding and numeric version comparison
 - ✅ Update install checks bundle identity and signature before swapping
 
