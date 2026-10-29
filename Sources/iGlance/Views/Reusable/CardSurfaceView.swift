@@ -9,35 +9,52 @@ struct CardSurfaceView<Content: View>: View {
         self.content = content()
     }
 
+    @ViewBuilder
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color.white.opacity(0.18),
-                                        Color.white.opacity(0.05),
-                                        Color.clear
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                    }
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.34), lineWidth: 0.9)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5)
-            )
-            .shadow(color: Color.black.opacity(0.07), radius: 10, x: 0, y: 5)
+        if #available(macOS 26.0, *) {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+                .glassEffect(.regular, in: shape)
+        } else {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+                .background {
+                    shape
+                        .fill(.ultraThinMaterial)
+                        .overlay { shape.fill(glassSheen) }
+                }
+                .overlay {
+                    shape.strokeBorder(glassEdge, lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 4)
+        }
+    }
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: Design.Radius.card)
+    }
+
+    private var glassSheen: LinearGradient {
+        LinearGradient(
+            colors: [
+                .white.opacity(0.16),
+                .white.opacity(0.04),
+                .clear
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var glassEdge: LinearGradient {
+        LinearGradient(
+            colors: [
+                .white.opacity(0.40),
+                .white.opacity(0.08),
+                .black.opacity(0.08)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 }

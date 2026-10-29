@@ -3,13 +3,13 @@ import Foundation
 enum AppSection: String, CaseIterable {
     case monitor
     case status
-    case tasks
+    case services
 
     var sfSymbolName: String {
         switch self {
         case .monitor: return "waveform.path.ecg"
         case .status: return "lock.shield"
-        case .tasks: return "clock.arrow.2.circlepath"
+        case .services: return "server.rack"
         }
     }
 
@@ -17,7 +17,7 @@ enum AppSection: String, CaseIterable {
         switch self {
         case .monitor: return "Monitor"
         case .status: return "Status"
-        case .tasks: return "Tasks"
+        case .services: return "Services"
         }
     }
 
@@ -25,7 +25,7 @@ enum AppSection: String, CaseIterable {
         switch self {
         case .monitor: return "System Monitor"
         case .status: return "System Status Controls"
-        case .tasks: return "Scheduled Tasks"
+        case .services: return "Headless Services"
         }
     }
 }

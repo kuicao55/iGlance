@@ -47,7 +47,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = StatusItemController(environment: env)
         NSLog("iGlance: StatusItemController created, item length=\(controller.getStatusItem().length)")
         self.statusItemController = controller
-        env.monitorStore.startDetailedRefresh()
 
         // macOS 26 (Tahoe) hides third-party menu bar items in a hidden
         // overflow area by default. Surface a one-time hint so the user
@@ -104,9 +103,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !defaults.bool(forKey: key) else { return }
         defaults.set(true, forKey: key)
 
-        // Defer to next runloop so the menu bar has a chance to draw.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self = self, !self.hasShownFirstLaunchHint else { return }
+        // Defer so the menu bar has a chance to draw.
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self, !self.hasShownFirstLaunchHint else { return }
             self.hasShownFirstLaunchHint = true
             self.presentFirstLaunchHint()
         }

@@ -1,0 +1,161 @@
+import SwiftUI
+
+struct ServicesView: View {
+    @ObservedObject var servicesStore: ServicesStore
+    @State private var editorTarget: EditorTarget?
+
+    private enum EditorTarget: Identifiable {
+        case add
+        case edit(ServiceBinding)
+
+        var id: String {
+            switch self {
+            case .add: return "add"
+            case .edit(let binding): return binding.id.uuidString
+            }
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Design.Spacing.section) {
+                header
+
+                if let error = servicesStore.lastActionError {
+                    errorBanner(error)
+                }
+
+                if servicesStore.bindings.isEmpty {
+                    emptyState
+                } else {
+                    VStack(spacing: Design.Spacing.section) {
+                        ForEach(servicesStore.bindings) { binding in
+                            ServiceCardView(
+                                binding: binding,
+                                runtime: servicesStore.runtime(for: binding.id),
+                                memoryHistory: servicesStore.history(for: binding.id),
+                                hasToken: servicesStore.hasToken(for: binding.id),
+                                onStart: { servicesStore.start(bindingID: binding.id) },
+                                onStop: { servicesStore.stop(bindingID: binding.id) },
+                                onPause: { servicesStore.perform(.pause, bindingID: binding.id) },
+                                onResume: { servicesStore.perform(.resume, bindingID: binding.id) },
+                                onToggle: { servicesStore.perform(.toggle, bindingID: binding.id) },
+                                onEdit: { editorTarget = .edit(binding) },
+                                onDelete: { servicesStore.deleteService(id: binding.id) }
+                            )
+                        }
+                    }
+                }
+
+                footer
+            }
+            .padding(Design.Spacing.page)
+        }
+        .sheet(item: $editorTarget) { target in
+            switch target {
+            case .add:
+                ServiceEditorView(servicesStore: servicesStore, existing: nil)
+            case .edit(let binding):
+                ServiceEditorView(servicesStore: servicesStore, existing: binding)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Services")
+                    .font(.title3.weight(.semibold))
+                Text("Headless services bound with iglance.service.v1")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Button {
+                editorTarget = .add
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 24)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Add Service")
+            .accessibilityLabel("Add Service")
+        }
+    }
+
+    private var emptyState: some View {
+        CardSurfaceView {
+            VStack(spacing: 10) {
+                Image(systemName: "server.rack")
+                    .font(.title)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+
+                Text("No services bound")
+                    .font(.headline)
+
+                Text("Add a headless service, give it a start command, and iGlance can start it, watch its memory, and stop it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button("Add Service") {
+                    editorTarget = .add
+                }
+                .controlSize(.small)
+                .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, minHeight: 150)
+            .padding(Design.Spacing.page)
+        }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 6) {
+            Image(systemName: servicesStore.isPolling ? "arrow.triangle.2.circlepath" : "pause.circle")
+                .font(.caption2)
+                .accessibilityHidden(true)
+            Text(servicesStore.isPolling ? "Polling while this pane is open" : "Polling paused")
+                .font(.caption2)
+            Spacer()
+            Text("\(servicesStore.bindings.count) bound")
+                .font(.caption2)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 2)
+        .padding(.top, 2)
+    }
+
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer()
+
+            Button {
+                servicesStore.lastActionError = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Dismiss error")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: Design.Radius.chip, style: .continuous))
+    }
+}

@@ -21,7 +21,10 @@ class PopoverController: NSObject {
         let hostingController = NSHostingController(rootView: popoverView)
         hostingController.view.appearance = NSApp.effectiveAppearance
 
-        popover.contentSize = NSSize(width: 448, height: 588)
+        popover.contentSize = NSSize(
+            width: Design.Layout.popoverWidth,
+            height: Design.Layout.popoverHeight
+        )
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
@@ -32,7 +35,10 @@ class PopoverController: NSObject {
     func show(relativeTo button: NSButton) {
         environment.monitorStore.startDetailedRefresh()
         environment.statusStore.refreshSleepDisabledStatus()
-        environment.tasksStore.refresh()
+        if environment.appStore.activeSection == .services {
+            environment.servicesStore.startPolling()
+        }
+        Task { await environment.updateStore.checkIfNeeded() }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         popover.contentViewController?.view.window?.appearance = NSApp.effectiveAppearance
         popover.contentViewController?.view.window?.isOpaque = false
@@ -47,6 +53,7 @@ class PopoverController: NSObject {
         isShown = false
         environment.appStore.popoverDidClose()
         environment.monitorStore.stopDetailedRefresh()
+        environment.servicesStore.stopPolling()
         removeOutsideClickMonitor()
     }
 
@@ -73,6 +80,8 @@ extension PopoverController: NSPopoverDelegate {
     func popoverDidClose(_ notification: Notification) {
         isShown = false
         environment.appStore.popoverDidClose()
+        environment.monitorStore.stopDetailedRefresh()
+        environment.servicesStore.stopPolling()
         removeOutsideClickMonitor()
     }
 }

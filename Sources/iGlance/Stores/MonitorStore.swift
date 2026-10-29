@@ -22,6 +22,11 @@ class MonitorStore: ObservableObject {
     private let historyBuffer = HistoryBuffer(capacity: 30)  // 60 seconds at 2s intervals
     private let refreshQueue = DispatchQueue(label: "com.iglance.monitor.refresh", qos: .userInitiated)
 
+    // Temperature probing shells out, so sample it every third tick (~6s)
+    // while the popover is open and reuse the last snapshot in between.
+    private var detailedTick = 0
+    private var cachedTemperatures = TemperatureSnapshot.unavailable
+
     init(
         cpuProvider: CPUUsageProvider,
         gpuProvider: GPUUsageProvider,
@@ -43,6 +48,10 @@ class MonitorStore: ObservableObject {
 
     /// Called by StatusItemController every 2 seconds (lightweight, for icon only)
     func refreshMenuBarMetrics() {
+        // Detailed refresh already recomputes the load index while the
+        // popover is open; skip the duplicate sampling.
+        guard detailedRefreshTimer == nil else { return }
+
         refreshQueue.async { [weak self] in
             guard let self = self else { return }
 
@@ -74,6 +83,10 @@ class MonitorStore: ObservableObject {
     }
 
     private func refreshDetailedSnapshot() {
+        let samplesTemperature = detailedTick % 3 == 0
+        detailedTick += 1
+        let cached = cachedTemperatures
+
         refreshQueue.async { [weak self] in
             guard let self = self else { return }
 
@@ -85,7 +98,7 @@ class MonitorStore: ObservableObject {
             let topMemoryProcesses = self.memoryProvider.topProcesses(limit: 5)
             let disk = self.diskProvider.currentUsage()
 
-            let temps = self.temperatureProvider.currentTemperatures()
+            let temps = samplesTemperature ? self.temperatureProvider.currentTemperatures() : cached
 
             let cpu = CPUSnapshot(usage: cpuUsage, modelName: self.cpuModelName, topProcesses: topCPUProcesses, isAvailable: true)
             let gpu = GPUSnapshot(
@@ -109,6 +122,10 @@ class MonitorStore: ObservableObject {
             let index = self.loadIndexCalculator.calculate(cpu: cpuUsage, gpu: 0, memory: memoryUsage, maxTemp: 0)
 
             DispatchQueue.main.async {
+                if samplesTemperature {
+                    self.cachedTemperatures = temps
+                }
+
                 self.currentSnapshot = SystemSnapshot(
                     timestamp: Date(),
                     cpu: cpu,

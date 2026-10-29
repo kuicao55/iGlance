@@ -6,9 +6,10 @@ class AppEnvironment {
     let appStore: AppStore
     let monitorStore: MonitorStore
     let statusStore: StatusStore
-    let tasksStore: TasksStore
+    let servicesStore: ServicesStore
+    let updateStore: UpdateStore
 
-    // Services
+    // Services (system data providers)
     let cpuProvider: CPUUsageProvider
     let gpuProvider: GPUUsageProvider
     let memoryProvider: MemoryProvider
@@ -16,8 +17,6 @@ class AppEnvironment {
     let systemInfoProvider: SystemInfoProvider
     let temperatureProvider: TemperatureProvider
     let powerAssertionService: PowerAssertionService
-    let taskDiscoveryService: TaskDiscoveryService
-    let processRunner: ProcessRunner
 
     // Support
     let loadIndexCalculator: LoadIndexCalculator
@@ -25,8 +24,7 @@ class AppEnvironment {
     let iconAnimator: MenuBarIconAnimator
 
     init() {
-        // Initialize services
-        self.processRunner = ProcessRunner()
+        // Initialize providers
         self.cpuProvider = CPUUsageProvider()
         self.gpuProvider = GPUUsageProvider()
         self.memoryProvider = MemoryProvider()
@@ -34,7 +32,6 @@ class AppEnvironment {
         self.systemInfoProvider = SystemInfoProvider()
         self.temperatureProvider = TemperatureProvider()
         self.powerAssertionService = PowerAssertionService()
-        self.taskDiscoveryService = TaskDiscoveryService(processRunner: processRunner)
 
         // Initialize support
         self.loadIndexCalculator = LoadIndexCalculator()
@@ -53,6 +50,7 @@ class AppEnvironment {
             loadIndexCalculator: loadIndexCalculator
         )
         self.statusStore = StatusStore(powerAssertionService: powerAssertionService)
-        self.tasksStore = TasksStore(taskDiscoveryService: taskDiscoveryService)
+        self.servicesStore = ServicesStore()
+        self.updateStore = UpdateStore()
     }
 }

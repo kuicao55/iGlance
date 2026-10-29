@@ -6,7 +6,9 @@ struct OpenArcGaugeView: View {
     let label: String
     let subtitle: String?
 
-    private let lineWidth: CGFloat = 8
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let lineWidth: CGFloat = 8.5
     private let bottomGap: CGFloat = 60  // degrees
 
     init(value: Double, color: Color, label: String, subtitle: String? = nil) {
@@ -24,7 +26,7 @@ struct OpenArcGaugeView: View {
             ZStack {
                 ArcShape(startAngle: .degrees(90 + bottomGap / 2), endAngle: .degrees(90 - bottomGap / 2 + 360))
                     .stroke(
-                        Color.secondary.opacity(0.18),
+                        .quaternary,
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
                     )
 
@@ -33,18 +35,21 @@ struct OpenArcGaugeView: View {
                     endAngle: .degrees(90 + bottomGap / 2 + arcAngle)
                 )
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                .animation(.easeInOut(duration: 0.45), value: value)
+                .animation(reduceMotion ? nil : Design.Motion.gauge, value: value)
 
                 VStack(spacing: 2) {
                     Text(label)
-                        .font(.system(size: size * 0.22, weight: .bold, design: .rounded))
+                        .font(.system(size: size * 0.21, weight: .bold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundColor(.primary)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .padding(.horizontal, 2)
 
-                    if let subtitle = subtitle {
+                    if let subtitle {
                         Text(subtitle)
                             .font(.system(size: size * 0.1, weight: .semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .frame(width: gaugeSize * 0.82, height: gaugeSize * 0.82, alignment: .center)
@@ -61,8 +66,18 @@ struct OpenArcGaugeView: View {
 }
 
 struct ArcShape: Shape {
-    let startAngle: Angle
-    let endAngle: Angle
+    var startAngle: Angle
+    var endAngle: Angle
+
+    /// Interpolating the angles is what makes the gauge sweep instead of
+    /// snapping when the value changes.
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(startAngle.degrees, endAngle.degrees) }
+        set {
+            startAngle = .degrees(newValue.first)
+            endAngle = .degrees(newValue.second)
+        }
+    }
 
     func path(in rect: CGRect) -> Path {
         let center = CGPoint(x: rect.midX, y: rect.midY)

@@ -20,7 +20,7 @@
 
 ## 👁️ What is iGlance?
 
-**iGlance** lives quietly in your menu bar and shows you what your Mac is doing — CPU, GPU, memory, temperature — without opening Activity Monitor. Need to keep your machine awake during a long render? One click. Want to see what background jobs are scheduled? One click. No Dock icon, no clutter, no waiting.
+**iGlance** lives quietly in your menu bar and shows you what your Mac is doing — CPU, GPU, memory, temperature — without opening Activity Monitor. Need to keep your machine awake during a long render? One click. Want to start and watch a headless service? One click. No Dock icon, no clutter, no waiting.
 
 Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no dependencies.
 
@@ -30,6 +30,7 @@ Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no d
 
 ### 📊 Monitor
 - **CPU, GPU, Memory, Temperature** — real-time readings on a 2×2 grid of animated gauges
+- **Real die temperatures** — CPU and GPU from AppleSMC (`TCMb` / `TRDX`) with an IOHID `PMU tdie` fallback; battery via the gas gauge
 - **Sparkline charts** — 60-second rolling history per metric
 - **Tap-to-flip cards** — click any card (except Temperature) for detailed history and top processes
 - **Color-coded thresholds** — green / yellow / orange / red as load climbs
@@ -39,18 +40,30 @@ Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no d
 - **Prevent Display Sleep** — keeps the screen awake for presentations
 - **SleepDisabled indicator** — see when *another* process is holding your Mac awake
 
-### 📅 Tasks
-- **LaunchAgents** &nbsp;·&nbsp; **LaunchDaemons** &nbsp;·&nbsp; **cron** &nbsp;·&nbsp; **at**
-- See labels, schedules, and running status of every background job you have permission to inspect
+### 🧩 Services
+- **Bind headless services** — a name, a start command, and an optional API token; works with Gofer and anything else that speaks `iglance.service.v1`
+- **Manifest handshake** — runs the command, reads its `IGLANCE_SERVICE_MANIFEST` line, and caches `base_url` + endpoints
+- **Start / Stop / Pause / Resume** — drives the service over HTTP once it has introduced itself
+- **Memory by group** — total RSS, per-group breakdown, and a rolling sparkline
+- **Keychain tokens** — tokens never touch `UserDefaults` or the bindings file
+- **Approval gate** — a command never runs until you tick *Allow iGlance to run this command*
 
 ### 🎯 Menu Bar
 - **Dynamic load indicator** — a tiny arc on the menu bar icon grows with system load (weighted average of CPU/GPU/Memory/Temp)
 - **Template-rendered** — automatically adapts to Light / Dark menu bar
 - **Click to open** — popover anchors directly under the menu bar icon
 
+### 🔄 Self-Update
+- **One-click update check** — reads the latest GitHub release and compares versions
+- **In-place install** — downloads `iGlance.app.zip`, verifies its bundle ID and code signature, swaps the app, and relaunches
+- **Safe swap** — keeps a backup and restores the previous app if copying fails
+- Checked at most once every 6 hours when the popover opens
+
 ### 🪟 The Look
-- macOS 14 native design language with subtle Liquid Glass surfaces
-- 440 × 520 fixed-size popover, optimized for glanceable density
+- Liquid Glass surfaces on macOS 26, with a material fallback on macOS 14–15
+- 400 × 545 fixed-size popover, one consistent 16pt padding rhythm
+- Monitor, Status, Services, and Update share one segmented glass bar
+- 3D card flips, a morphing tab selection, and Reduce Motion support
 - 2-second refresh interval, automatic cleanup of power assertions on quit
 
 ---
@@ -68,7 +81,9 @@ cp -R ~/Downloads/iGlance.app /Applications/
 open /Applications/iGlance.app
 ```
 
-> First launch: macOS will ask you to confirm opening an app from the internet. Click **Open**.
+> First launch: macOS may ask you to confirm opening an app from the internet. Click **Open**. Releases are notarized when published with the Developer ID flow; see [docs/SIGNING.md](docs/SIGNING.md).
+
+Once installed, open the popover and click the **Update** tab at the right of the segmented bar. iGlance downloads the latest release, verifies it, replaces itself, and relaunches.
 
 ### Build from source
 
@@ -78,10 +93,25 @@ Requires **macOS 14+** and **Swift 5.9+** (Xcode 15 / Command Line Tools).
 git clone https://github.com/kuicao55/iGlance.git
 cd iGlance
 ./build-app.sh
-open iGlance.app
+open .build/release/iGlance.app
 ```
 
-`build-app.sh` compiles a release binary, assembles the `.app` bundle, embeds the icon, and ad-hoc code-signs the result.
+`build-app.sh` compiles a release binary, assembles the `.app` bundle, embeds the icon, and ad-hoc code-signs the result. For distribution signing and notarization see [docs/SIGNING.md](docs/SIGNING.md).
+
+#### Command-line build options
+
+```bash
+swift build                  # Debug build (fast, unoptimized)
+swift build -c release       # Release build (optimized)
+./build-app.sh               # Bundle the release build into iGlance.app
+./build-app.sh --install     # Build and copy to /Applications
+./build-app.sh --release     # Also produce dist/iGlance.app.zip for GitHub
+./build-app.sh --notarize    # Developer ID sign, notarize, staple, and zip
+```
+
+`SIGN_IDENTITY` selects the signing identity (defaults to ad-hoc). Set
+`NOTARY_PROFILE` to a `notarytool` keychain profile for notarization. Full
+instructions: [docs/SIGNING.md](docs/SIGNING.md).
 
 ---
 
@@ -89,18 +119,130 @@ open iGlance.app
 
 1. Launch iGlance — the eye icon appears in your menu bar
 2. **Click it** to open the popover
-3. Switch between the **Monitor** / **Status** / **Tasks** tabs
-4. The menu bar icon's arc fills as your system load increases
+3. Switch panes with the segmented bar at the top: **Monitor** / **Status** / **Services** / **Update**
+4. In **Monitor**, click any card to flip it to its detail side; click again to flip back
+5. In **Services**, click **+** to bind a headless service — see [Binding a service](#-binding-a-service-step-by-step)
+6. Click **Update** to check GitHub releases and install an update in place
+7. The menu bar icon's arc fills as your system load increases
 
 > The menu bar icon lives under the date/time by default. Drag it out, or add it to *Always Shown* via **System Settings → Menu Bar**.
 
-### Command-line build options
+---
 
-```bash
-swift build                  # Debug build (fast, unoptimized)
-swift build -c release       # Release build (optimized)
-./build-app.sh               # Bundle the release build into iGlance.app
+## 🔌 Binding a service (step by step)
+
+A service only needs a **name** and a **start command**. Everything else —
+address, endpoints, auth header, memory breakdown — is discovered from the
+manifest the command prints once the service is ready.
+
+### 1. Open the editor
+
+Popover → **Services** → **+** in the top-right corner (or **Add Service** on
+the empty state). The editor sheet opens.
+
+### 2. Fill in the fields
+
+| Field | What to put |
+|---|---|
+| **Name** | Shown on the card, e.g. `Gofer` |
+| **Start command** | The exact line you'd type in Terminal to start (or reuse) the service, e.g. `~/Applications/Gofer/start-gofer.sh start --manifest`. It runs through `/bin/zsh -lc` from your home directory, so `~`, pipes and `&&` all work. **Choose Script…** appends a shell-quoted path for you. |
+| **API token** (optional) | Sent in the header named by the manifest's `auth.header`. Stored in the login Keychain keyed by the binding's UUID — never in the bindings file. Leave blank if the service has no auth. |
+| **Refresh every Ns** | How often to poll `endpoints.status` while the Services pane is open. 2–60 s, default 5 s. |
+| **Allow iGlance to run this command and control the service** | The execution gate. While off, **Test Start**, **Start**, **Pause**, **Resume** and **Stop** are disabled. Changing the command of an existing binding switches it off again until you re-approve. |
+
+### 3. Test before saving
+
+- **Test Start** runs the command and waits up to **20 s** for the manifest
+  line. On success the sheet reports the service name, version, `base_url`,
+  and endpoint count. On failure it shows the exit status and the tail of
+  stderr. Pressing it while the service is already running is safe — a good
+  start command is idempotent and still prints the manifest.
+- **Test Connection** calls `endpoints.status` with the stored or entered
+  token and reports state, pid and memory. It's the quickest way to check a
+  token: `401` comes back as *unauthorized*.
+
+### 4. Manifest fallback
+
+If your start command can't print a manifest — a launchd-managed daemon, a
+service that's already running, a script you don't want to modify — expand
+**Manifest (optional)**, paste the `IGLANCE_SERVICE_MANIFEST {...}` line (or
+just the `{...}` JSON), and click **Use Manifest**. iGlance caches `base_url`,
+endpoints and auth on the binding, so polling works without running anything.
+
+### 5. Save
+
+Press **Save** (↩). The card appears in the list and polling starts
+immediately.
+
+### What the card shows
+
+- **State** — running / paused / starting / stopping / offline / unauthorized,
+  with uptime, pid and `host:port`; offline cards keep a *last seen* stamp
+- **Memory** — total RSS, a rolling sparkline, and a **N groups** disclosure
+  with per-group RSS and process counts
+- **Controls** — **Start**, **Pause** / **Resume**, **Stop**, plus a **⋯** menu
+  with *Edit Service…*, *Toggle Pause* and *Delete Service*
+- **Delete** removes the binding and its Keychain token. It does **not** stop
+  the service, and iGlance never starts bound services automatically at launch.
+
+### Writing a service iGlance can drive
+
+iGlance runs `/bin/zsh -lc "<start command>"`, reads stdout line by line, and
+waits for the first line that begins with `IGLANCE_SERVICE_MANIFEST `. The rest
+of that line is JSON:
+
+```text
+IGLANCE_SERVICE_MANIFEST {"schema":"iglance.service.v1","service":{"id":"gofer","name":"Gofer","version":"0.4.0"},"base_url":"http://127.0.0.1:8790","auth":{"type":"header","header":"X-Gofer-Token"},"endpoints":{"health":"/health","status":"/api/v1/service","memory":"/api/v1/service/memory","pause":"/api/v1/service/pause","resume":"/api/v1/service/resume","toggle":"/api/v1/service/toggle","stop":"/api/v1/service/stop"}}
 ```
+
+Rules for the start command:
+
+- **Idempotent** — running it while the service is up must succeed and still
+  print the manifest.
+- **Print the manifest only when ready** — after the health check passes.
+- **Logs are fine** — iGlance ignores every other stdout/stderr line.
+- **No secrets** — a token must never appear in the command or its output.
+
+| Manifest field | Meaning |
+|---|---|
+| `schema` | Must be `iglance.service.v1` |
+| `service.id` / `.name` / `.version` | Stable id, display name, version |
+| `base_url` | HTTP root, no trailing `/` |
+| `auth.type` / `auth.header` | `header` or `none`; header name for the token |
+| `endpoints.status` | Required — state, pid, uptime, memory, controls |
+| `endpoints.health` | Public health check |
+| `endpoints.memory` | Memory-only snapshot, used when `status` has none |
+| `endpoints.pause` / `resume` / `toggle` / `stop` | Optional controls; missing ones disable their buttons |
+
+`GET endpoints.status` returns the shape below; all fields are optional except
+a recognizable state. Memory is always in **bytes**, and
+`memory.available: false` renders as `—` rather than `0`.
+
+```json
+{
+  "schema": "iglance.service.v1",
+  "state": "running",
+  "paused": false,
+  "pid": 12345,
+  "uptime_sec": 3600,
+  "memory": {
+    "available": true,
+    "source": "ps-rss",
+    "total_rss_bytes": 435896320,
+    "total_processes": 13,
+    "groups": [
+      { "id": "service", "label": "Gofer", "rss_bytes": 12603392, "processes": 1, "pids": [12345] },
+      { "id": "xhs_browser", "label": "小红书浏览器", "rss_bytes": 423292928, "processes": 12, "pids": [12346] }
+    ]
+  }
+}
+```
+
+`groups` is what the card renders; the named top-level groups Gofer also
+returns are compatibility fields. Control endpoints answer `POST` with `200`
+(`stop` may answer `202` and then exit — a subsequent connection failure is
+treated as *stopped*). `401` marks the card *unauthorized* and stops retrying;
+connection failures mark it *offline* while keeping the last snapshot.
 
 ---
 
@@ -109,8 +251,10 @@ swift build -c release       # Release build (optimized)
 | Layer | Tech | Notes |
 |---|---|---|
 | UI | SwiftUI + AppKit | NSPopover anchors UI to menu bar |
-| State | Combine + ObservableObject | `AppStore` / `MonitorStore` / `StatusStore` / `TasksStore` |
-| Data | `top`, `ioreg`, `vm_stat`, `memory_pressure`, `powermetrics` | Hardware-dependent sensors gracefully degrade |
+| State | Combine + ObservableObject | `AppStore` / `MonitorStore` / `StatusStore` / `ServicesStore` / `UpdateStore` |
+| Data | `host_processor_info`, `sysctl`, `vm_stat`, `ps`, IOKit | CPU / memory / GPU read directly; unsupported sensors degrade to `—` |
+| Sensors | AppleSMC + IOHIDEventSystem | CPU `TCMb`, GPU `TRDX`, `PMU tdie` fallback, gas-gauge battery |
+| Storage | JSON in Application Support + Keychain | Bindings in JSON; service tokens keyed by binding UUID in the Keychain |
 | Power | IOKit `IOPMAssertion` | Auto-released on quit |
 | Build | SwiftPM + `build-app.sh` | No Xcode project required |
 
@@ -119,7 +263,7 @@ Sources/iGlance/
 ├── App/           # Lifecycle, AppDelegate, scene plumbing
 ├── Controllers/   # Status item + popover controllers
 ├── Models/        # Data structures
-├── Services/      # CPU/GPU/Memory/Temp providers, power mgmt, task discovery
+├── Services/      # CPU/GPU/Memory/Temp providers, power mgmt, service client/launcher
 ├── Stores/        # Reactive state
 ├── Support/       # Logging, utilities
 └── Views/         # SwiftUI views (cards, gauges, sparklines, tabs)
@@ -129,14 +273,18 @@ Sources/iGlance/
 
 ## 🧪 Verified
 
-All 12 automated tests pass — see `verify-all-features.sh` and `FINAL_TEST_REPORT.md`.
+`swift test` runs the unit suite (83 tests).
 
 - ✅ Build & launch
 - ✅ Menu bar presence (LSUIElement)
-- ✅ Live CPU / GPU / Memory / Temp data
+- ✅ Live CPU / GPU / Memory data
+- ✅ Real CPU / GPU / battery temperatures (AppleSMC `TCMb` / `TRDX`, IOHID fallback)
 - ✅ Card flip animations
 - ✅ Sleep assertion toggle + cleanup
-- ✅ LaunchAgent / LaunchDaemon / cron / at discovery
+- ✅ Service manifest parsing, 401 / connection-failure handling, memory decoding
+- ✅ Service start/stop/pause/resume against the `iglance.service.v1` protocol
+- ✅ GitHub release decoding and numeric version comparison
+- ✅ Update install checks bundle identity and signature before swapping
 
 ---
 
@@ -144,6 +292,8 @@ All 12 automated tests pass — see `verify-all-features.sh` and `FINAL_TEST_REP
 
 - [ ] Homebrew Cask (`brew install --cask iglance`)
 - [ ] DMG installer with drag-to-Applications UX
+- [x] In-app update from GitHub releases
+- [ ] Developer ID notarized release pipeline (script ready — see [docs/SIGNING.md](docs/SIGNING.md))
 - [ ] Customizable refresh interval (currently fixed at 2s)
 - [ ] Threshold-based notifications (e.g. alert when CPU > 90% for 30s)
 - [ ] Menu bar icon style options (gauge, percentage, sparkline)

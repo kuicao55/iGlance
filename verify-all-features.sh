@@ -30,16 +30,16 @@ REQUIRED_FILES=(
     "Sources/iGlance/Stores/AppStore.swift"
     "Sources/iGlance/Stores/MonitorStore.swift"
     "Sources/iGlance/Stores/StatusStore.swift"
-    "Sources/iGlance/Stores/TasksStore.swift"
+    "Sources/iGlance/Stores/ServicesStore.swift"
     "Sources/iGlance/Models/AppSection.swift"
     "Sources/iGlance/Services/CPUUsageProvider.swift"
     "Sources/iGlance/Services/MemoryProvider.swift"
     "Sources/iGlance/Services/PowerAssertionService.swift"
-    "Sources/iGlance/Services/TaskDiscoveryService.swift"
+    "Sources/iGlance/Services/ServiceClient.swift"
     "Sources/iGlance/Views/PopoverView.swift"
     "Sources/iGlance/Views/Monitor/MonitorView.swift"
     "Sources/iGlance/Views/Status/StatusView.swift"
-    "Sources/iGlance/Views/Tasks/TasksView.swift"
+    "Sources/iGlance/Views/Services/ServicesView.swift"
 )
 
 ALL_FILES_EXIST=true

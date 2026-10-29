@@ -5,38 +5,31 @@ struct MonitorGridView: View {
     let cardSize: CGFloat
     let spacing: CGFloat
 
-    private var columns: [GridItem] {
-        [
-            GridItem(.fixed(cardSize), spacing: spacing, alignment: .center),
-            GridItem(.fixed(cardSize), spacing: spacing, alignment: .center)
-        ]
-    }
-
     var body: some View {
-        LazyVGrid(columns: columns, spacing: spacing) {
-            CPUCardView(
-                snapshot: monitorStore.currentSnapshot.cpu,
-                history: monitorStore.cpuHistory,
-                isFlipped: $monitorStore.isCPUCardFlipped
-            )
-            .frame(width: cardSize, height: cardSize, alignment: .center)
+        VStack(spacing: spacing) {
+            HStack(spacing: spacing) {
+                CPUCardView(
+                    snapshot: monitorStore.currentSnapshot.cpu,
+                    history: monitorStore.cpuHistory,
+                    isFlipped: $monitorStore.isCPUCardFlipped
+                )
+                .frame(width: cardSize, height: cardSize)
 
-            MemoryCardView(
-                snapshot: monitorStore.currentSnapshot.memory,
-                history: monitorStore.memoryHistory,
-                isFlipped: $monitorStore.isMemoryCardFlipped
-            )
-            .frame(width: cardSize, height: cardSize, alignment: .center)
+                MemoryCardView(
+                    snapshot: monitorStore.currentSnapshot.memory,
+                    history: monitorStore.memoryHistory,
+                    isFlipped: $monitorStore.isMemoryCardFlipped
+                )
+                .frame(width: cardSize, height: cardSize)
+            }
 
-            DiskCardView(
-                snapshot: monitorStore.currentSnapshot.disk
-            )
-            .frame(width: cardSize, height: cardSize, alignment: .center)
+            HStack(spacing: spacing) {
+                DiskCardView(snapshot: monitorStore.currentSnapshot.disk)
+                    .frame(width: cardSize, height: cardSize)
 
-            TemperatureCardView(
-                snapshot: monitorStore.currentSnapshot.temperature
-            )
-            .frame(width: cardSize, height: cardSize, alignment: .center)
+                TemperatureCardView(snapshot: monitorStore.currentSnapshot.temperature)
+                    .frame(width: cardSize, height: cardSize)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

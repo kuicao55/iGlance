@@ -5,6 +5,8 @@ struct TemperatureBarView: View {
     let value: Double?
     let maxValue: Double
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     init(label: String, value: Double?, maxValue: Double = 100) {
         self.label = label
         self.value = value
@@ -12,53 +14,44 @@ struct TemperatureBarView: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text(label)
                 .font(.caption)
-                .foregroundColor(.secondary)
-                .frame(width: 30, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .frame(width: 38, alignment: .leading)
+                .lineLimit(1)
 
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.gray.opacity(0.2))
-                        .frame(height: 8)
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(.quaternary)
 
-                    if let value = value {
-                        let normalized = min(value / maxValue, 1.0)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(barColor(for: value))
-                            .frame(width: geometry.size.width * normalized, height: 8)
-                            .animation(.easeInOut(duration: 0.3), value: value)
-                    }
-                }
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(barColor(for: value ?? 0))
+                    .scaleEffect(x: normalizedValue, y: 1, anchor: .leading)
             }
+            .frame(maxWidth: .infinity)
             .frame(height: 8)
+            .animation(reduceMotion ? nil : Design.Motion.bar, value: value)
 
-            if let value = value {
-                Text(Formatters.formatTemperature(value))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 45, alignment: .trailing)
-            } else {
-                Text("N/A")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 45, alignment: .trailing)
-            }
+            Text(Formatters.formatTemperature(value))
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(width: 42, alignment: .trailing)
+                .lineLimit(1)
         }
+    }
+
+    private var normalizedValue: CGFloat {
+        CGFloat(min(max((value ?? 0) / maxValue, 0), 1))
     }
 
     private func barColor(for temp: Double) -> Color {
         switch temp {
-        case ..<45:
-            return .green
-        case 45..<70:
-            return .yellow
-        case 70..<85:
-            return .orange
-        default:
-            return .red
+        case ..<45: .green
+        case 45..<70: .yellow
+        case 70..<85: .orange
+        default: .red
         }
     }
 }

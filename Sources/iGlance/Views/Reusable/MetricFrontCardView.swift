@@ -22,37 +22,22 @@ struct MetricFrontCardView<Main: View, Footer: View>: View {
         CardSurfaceView {
             GeometryReader { proxy in
                 let side = min(proxy.size.width, proxy.size.height)
-                let inset = side * 0.072
-                let iconSize = side * 0.13
-                let interSectionSpacing = side * 0.045
-                let mainSectionHeight = side * 0.48
-                let footerSectionHeight = side * 0.19
 
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer()
-                        ZStack {
-                            RoundedRectangle(cornerRadius: iconSize * 0.32, style: .continuous)
-                                .fill(.thinMaterial)
-                            Image(systemName: icon)
-                                .font(.system(size: iconSize * 0.42, weight: .semibold))
-                                .foregroundStyle(tint)
-                        }
-                        .frame(width: iconSize, height: iconSize)
+                ZStack(alignment: .topTrailing) {
+                    // The icon is an overlay so it never pushes the metric and
+                    // footer off-center.
+                    VStack(spacing: side * 0.045) {
+                        main
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+
+                        footer
                     }
+                    .padding(Design.Spacing.cardContent)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
 
-                    Spacer(minLength: interSectionSpacing)
-
-                    main
-                        .frame(maxWidth: .infinity, minHeight: mainSectionHeight, maxHeight: mainSectionHeight, alignment: .center)
-
-                    Spacer(minLength: interSectionSpacing)
-
-                    footer
-                        .frame(maxWidth: .infinity, minHeight: footerSectionHeight, maxHeight: footerSectionHeight, alignment: .top)
+                    CardIconBadge(systemName: icon, tint: tint, size: side * 0.115)
+                        .padding(12)
                 }
-                .padding(inset)
-                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
         }
         .aspectRatio(1, contentMode: .fit)

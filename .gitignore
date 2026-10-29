@@ -5,3 +5,6 @@ iGlance.app.zip
 .DS_Store
 *.app
 *.app.zip
+
+# Local Claude Code setup (skills are symlinked per machine)
+.claude/

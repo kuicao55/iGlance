@@ -11,6 +11,7 @@ final class StatusItemController: NSObject {
     private var cancellables = Set<AnyCancellable>()
     private var iconRefreshTimer: Timer?
     private var eventMonitor: Any?
+    private var lastRenderedLoadIndex: Double?
 
     init(environment: AppEnvironment) {
         NSLog("iGlance: StatusItemController init start")
@@ -61,6 +62,7 @@ final class StatusItemController: NSObject {
         if !initialImage.representations.isEmpty {
             button.image = initialImage
             button.image?.isTemplate = true
+            lastRenderedLoadIndex = 0
         }
         if button.image == nil {
             // Last-resort fallback so the slot is never blank.
@@ -108,10 +110,16 @@ final class StatusItemController: NSObject {
     private func updateIcon(loadIndex: Double) {
         guard let button = statusItem.button else { return }
 
-        button.title = ""
+        // Re-rendering the gauge is the expensive part of the menu bar loop;
+        // sub-half-point changes are not visible in the small icon.
+        if let lastRenderedLoadIndex, abs(lastRenderedLoadIndex - loadIndex) < 0.5 {
+            return
+        }
 
         let rendered = environment.iconRenderer.renderIcon(loadIndex: loadIndex)
         if !rendered.representations.isEmpty {
+            lastRenderedLoadIndex = loadIndex
+            button.title = ""
             button.image = rendered
             button.image?.isTemplate = true
         }
