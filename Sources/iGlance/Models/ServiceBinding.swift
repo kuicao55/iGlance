@@ -68,4 +68,43 @@ struct ServiceBinding: Codable, Identifiable, Equatable {
         serviceID = nil
         serviceVersion = nil
     }
+
+    /// The service's web UI, if it exposes one.
+    ///
+    /// Preference order: the absolute `urls.panel` from the last status
+    /// response (this is the address the service wants people to use, e.g. a
+    /// Tailscale name), then the manifest's relative `panel` path resolved
+    /// against the status display/base address, then against the cached
+    /// `baseURL`. Only http(s) is ever returned, and the token is never added.
+    func panelURL(status: ServiceStatusResponse?) -> URL? {
+        if let raw = status?.urls?.panel,
+           let url = URL(string: raw),
+           Self.isWebURL(url) {
+            return url
+        }
+
+        guard let path = endpoints?["panel"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else {
+            return nil
+        }
+
+        let baseString = status?.urls?.display
+            ?? status?.urls?.base
+            ?? baseURL?.absoluteString
+        guard let baseString, let base = URL(string: baseString) else { return nil }
+
+        let relative = path.hasPrefix("/") ? path : "/" + path
+        guard let url = URL(string: relative, relativeTo: base)?.absoluteURL,
+              Self.isWebURL(url) else {
+            return nil
+        }
+        return url
+    }
+
+    private static func isWebURL(_ url: URL) -> Bool {
+        switch url.scheme?.lowercased() {
+        case "http", "https": return true
+        default: return false
+        }
+    }
 }

@@ -44,6 +44,7 @@ Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no d
 - **Bind headless services** — a name, a start command, and an optional API token; works with Gofer and anything else that speaks `iglance.service.v1`
 - **Manifest handshake** — runs the command, reads its `IGLANCE_SERVICE_MANIFEST` line, and caches `base_url` + endpoints
 - **Start / Stop / Pause / Resume** — drives the service over HTTP once it has introduced itself
+- **Open Panel** — one click opens the service's own web UI in your default browser
 - **Memory by group** — total RSS, per-group breakdown, and a rolling sparkline
 - **Keychain tokens** — tokens never touch `UserDefaults` or the bindings file
 - **Approval gate** — a command never runs until you tick *Allow iGlance to run this command*
@@ -187,6 +188,10 @@ immediately.
   with per-group RSS and process counts
 - **Controls** — **Start**, **Pause** / **Resume**, **Stop**, plus a **⋯** menu
   with *Edit Service…*, *Toggle Pause* and *Delete Service*
+- **Open Panel** — a Safari button that opens the service's web UI while it is
+  running or paused. It appears only when the manifest or status reports a
+  panel (`endpoints.panel` / `urls.panel`); the browser handles login, and the
+  API token is never put in the URL
 - **Delete** removes the binding and its Keychain token. It does **not** stop
   the service, and iGlance never starts bound services automatically at launch.
 
@@ -216,6 +221,7 @@ Rules for the start command:
 | `auth.type` / `auth.header` | `header` or `none`; header name for the token |
 | `endpoints.status` | Required — state, pid, uptime, memory, controls |
 | `endpoints.health` | Public health check |
+| `endpoints.panel` | Optional web UI path; enables the card's **Open Panel** button |
 | `endpoints.memory` | Memory-only snapshot, used when `status` has none |
 | `endpoints.pause` / `resume` / `toggle` / `stop` | Optional controls; missing ones disable their buttons |
 
@@ -230,6 +236,12 @@ a recognizable state. Memory is always in **bytes**, and
   "paused": false,
   "pid": 12345,
   "uptime_sec": 3600,
+  "urls": {
+    "base": "http://127.0.0.1:8790",
+    "display": "http://127.0.0.1:8790",
+    "health": "http://127.0.0.1:8790/health",
+    "panel": "http://127.0.0.1:8790/"
+  },
   "memory": {
     "available": true,
     "source": "ps-rss",
@@ -242,6 +254,12 @@ a recognizable state. Memory is always in **bytes**, and
   }
 }
 ```
+
+For the **Open Panel** button iGlance uses `urls.panel` (an absolute address,
+so a Tailscale/public URL declared by the service wins), then resolves the
+manifest's relative `endpoints.panel` against `urls.display` → `urls.base` →
+the cached `base_url`. Only `http` / `https` is accepted, and a service that
+declares no panel simply doesn't get the button.
 
 `groups` is what the card renders; the named top-level groups Gofer also
 returns are compatibility fields. Control endpoints answer `POST` with `200`
@@ -278,7 +296,7 @@ Sources/iGlance/
 
 ## 🧪 Verified
 
-`swift test` runs the unit suite (87 tests).
+`swift test` runs the unit suite (93 tests).
 
 - ✅ Build & launch
 - ✅ Menu bar presence (LSUIElement)
@@ -288,6 +306,7 @@ Sources/iGlance/
 - ✅ Sleep assertion toggle + cleanup
 - ✅ Service manifest parsing, 401 / connection-failure handling, memory decoding
 - ✅ Service start/stop/pause/resume against the `iglance.service.v1` protocol
+- ✅ Panel URL resolution (`urls.panel` → `display`/`base` + `endpoints.panel`, http(s) only)
 - ✅ Add / Edit Service draft survives closing the popover and switching sections
 - ✅ GitHub release decoding and numeric version comparison
 - ✅ Update install checks bundle identity and signature before swapping

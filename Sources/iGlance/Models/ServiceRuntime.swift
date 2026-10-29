@@ -50,6 +50,11 @@ struct ServiceRuntime: Equatable {
     var isBusy = false
     var manifest: ServiceManifest?
 
+    /// Resolved from the latest status response; `nil` when the service has no
+    /// web panel (or before the first poll — the view falls back to the
+    /// binding's manifest path).
+    var panelURL: URL?
+
     var isActive: Bool {
         state == .running || state == .paused || state == .stopping
     }
@@ -93,6 +98,9 @@ struct ServiceStatusURLs: Decodable, Equatable {
     let base: String?
     let display: String?
     let health: String?
+    /// Absolute address of the service's web panel, already built from the
+    /// service's configured public/display URL when it has one.
+    let panel: String?
 }
 
 struct ServiceStatusAuth: Decodable, Equatable {

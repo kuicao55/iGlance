@@ -5,8 +5,10 @@ struct ServiceCardView: View {
     let runtime: ServiceRuntime
     let memoryHistory: [Double]
     let hasToken: Bool
+    let panelURL: URL?
 
     let onStart: () -> Void
+    let onOpenPanel: () -> Void
     let onStop: () -> Void
     let onPause: () -> Void
     let onResume: () -> Void
@@ -267,6 +269,18 @@ struct ServiceCardView: View {
             .disabled(runtime.isBusy || runtime.state == .offline || binding.stopPath == nil)
             .help("Ask the service to stop")
 
+            if panelURL != nil {
+                Button {
+                    onOpenPanel()
+                } label: {
+                    Image(systemName: "safari")
+                }
+                .disabled(runtime.isBusy || !canOpenPanel)
+                .help("Open Panel")
+                .accessibilityLabel("Open Panel")
+                .accessibilityHint(panelURL?.absoluteString ?? "")
+            }
+
             Spacer(minLength: 0)
 
             if runtime.isBusy {
@@ -301,6 +315,11 @@ struct ServiceCardView: View {
     }
 
     // MARK: - Helpers
+
+    /// The panel is only reachable once the service is actually up.
+    private var canOpenPanel: Bool {
+        runtime.state == .running || runtime.state == .paused
+    }
 
     private var statusColor: Color {
         switch runtime.state {

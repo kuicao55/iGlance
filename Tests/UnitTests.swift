@@ -551,6 +551,61 @@ class ServiceStateTests: XCTestCase {
     }
 }
 
+class ServicePanelTests: XCTestCase {
+    private func makeBinding(
+        endpoints: [String: String]?,
+        baseURL: String? = "http://127.0.0.1:8790"
+    ) -> ServiceBinding {
+        ServiceBinding(
+            name: "Gofer",
+            startCommand: "true",
+            baseURL: baseURL.flatMap { URL(string: $0) },
+            endpoints: endpoints
+        )
+    }
+
+    private func status(_ json: String) throws -> ServiceStatusResponse {
+        try ServiceJSON.decoder.decode(ServiceStatusResponse.self, from: Data(json.utf8))
+    }
+
+    func testPanelURLPrefersStatusAbsoluteURL() throws {
+        let binding = makeBinding(endpoints: ["panel": "/"])
+        let status = try status(
+            #"{"state":"running","urls":{"base":"http://127.0.0.1:8790","display":"https://gofer.tailnet.ts.net","panel":"https://gofer.tailnet.ts.net/"}}"#
+        )
+        XCTAssertEqual(binding.panelURL(status: status)?.absoluteString, "https://gofer.tailnet.ts.net/")
+    }
+
+    func testPanelURLUsesDisplayAddress() throws {
+        let binding = makeBinding(endpoints: ["panel": "/admin"])
+        let status = try status(
+            #"{"urls":{"base":"http://127.0.0.1:8790","display":"http://100.64.0.2:8790"}}"#
+        )
+        XCTAssertEqual(binding.panelURL(status: status)?.absoluteString, "http://100.64.0.2:8790/admin")
+    }
+
+    func testPanelURLResolvesManifestPath() {
+        let binding = makeBinding(endpoints: ["panel": "/"])
+        XCTAssertEqual(binding.panelURL(status: nil)?.absoluteString, "http://127.0.0.1:8790/")
+    }
+
+    func testPanelURLAddsLeadingSlash() {
+        let binding = makeBinding(endpoints: ["panel": "ui"])
+        XCTAssertEqual(binding.panelURL(status: nil)?.absoluteString, "http://127.0.0.1:8790/ui")
+    }
+
+    func testPanelURLRejectsNonHTTP() throws {
+        let binding = makeBinding(endpoints: nil)
+        let status = try status(#"{"urls":{"panel":"javascript:alert(1)"}}"#)
+        XCTAssertNil(binding.panelURL(status: status))
+    }
+
+    func testNoPanelEndpointReturnsNil() {
+        let binding = makeBinding(endpoints: ["status": "/api/v1/service"])
+        XCTAssertNil(binding.panelURL(status: nil))
+    }
+}
+
 final class MockURLProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
 

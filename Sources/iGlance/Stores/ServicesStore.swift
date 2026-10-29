@@ -66,6 +66,14 @@ final class ServicesStore: ObservableObject {
         tokenStore.token(for: id)?.isEmpty == false
     }
 
+    /// The service's web panel, if it has one. Prefers the address resolved
+    /// from the last status response and falls back to the manifest path so
+    /// the button is available before the first poll.
+    func panelURL(for id: UUID) -> URL? {
+        guard let binding = binding(for: id) else { return nil }
+        return runtime(for: id).panelURL ?? binding.panelURL(status: nil)
+    }
+
     // MARK: - Editor
 
     func beginAddingService() {
@@ -478,6 +486,10 @@ final class ServicesStore: ObservableObject {
             if changed {
                 persist()
             }
+        }
+
+        if let binding = binding(for: bindingID) {
+            runtime.panelURL = binding.panelURL(status: status)
         }
 
         runtimes[bindingID] = runtime

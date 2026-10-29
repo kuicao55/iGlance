@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct ServicesView: View {
     @ObservedObject var servicesStore: ServicesStore
@@ -30,7 +31,9 @@ struct ServicesView: View {
                                 runtime: servicesStore.runtime(for: binding.id),
                                 memoryHistory: servicesStore.history(for: binding.id),
                                 hasToken: servicesStore.hasToken(for: binding.id),
+                                panelURL: servicesStore.panelURL(for: binding.id),
                                 onStart: { servicesStore.start(bindingID: binding.id) },
+                                onOpenPanel: { openPanel(for: binding) },
                                 onStop: { servicesStore.stop(bindingID: binding.id) },
                                 onPause: { servicesStore.perform(.pause, bindingID: binding.id) },
                                 onResume: { servicesStore.perform(.resume, bindingID: binding.id) },
@@ -45,6 +48,19 @@ struct ServicesView: View {
                 footer
             }
             .padding(Design.Spacing.page)
+        }
+    }
+
+    /// Opens the panel in the default browser. The API token is never added to
+    /// the URL; the service handles its own panel login.
+    private func openPanel(for binding: ServiceBinding) {
+        guard let url = servicesStore.panelURL(for: binding.id) else {
+            servicesStore.lastActionError = "\(binding.name) does not expose a web panel."
+            return
+        }
+        guard NSWorkspace.shared.open(url) else {
+            servicesStore.lastActionError = "Could not open \(url.absoluteString) in the default browser."
+            return
         }
     }
 
