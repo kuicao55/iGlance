@@ -25,14 +25,23 @@ struct ServiceCardView: View {
         CardSurfaceView(alignment: .topLeading) {
             VStack(alignment: .leading, spacing: 10) {
                 titleRow
+
+                if let target = targetDescription {
+                    Text(target)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(target)
+                }
+
                 metaRow
 
                 if let error = runtime.lastError {
                     errorLine(error)
                 }
 
-                if !binding.startCommandApproved {
-                    inlineWarning("Start command not approved. Edit the service to allow it.")
+                if !binding.startCommandApproved && !binding.readOnly {
+                    inlineWarning("Control is not approved. Edit the service to allow iGlance to start and stop it.")
                 }
 
                 if let baseURL = binding.baseURL, !ServiceManifestParser.isLoopback(baseURL) {
@@ -66,7 +75,11 @@ struct ServiceCardView: View {
                 .font(.body.weight(.semibold))
                 .lineLimit(1)
 
-            if let version = binding.serviceVersion {
+            if binding.kind != .manifest {
+                Text(binding.kind.label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else if let version = binding.serviceVersion {
                 Text("v\(version)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -82,6 +95,14 @@ struct ServiceCardView: View {
                     .foregroundStyle(.secondary)
                     .help("Token stored in Keychain")
                     .accessibilityLabel("Token stored in Keychain")
+            }
+
+            if binding.readOnly {
+                Image(systemName: "eye")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .help("Read-only")
+                    .accessibilityLabel("Read-only")
             }
 
             Spacer(minLength: 6)
@@ -125,6 +146,23 @@ struct ServiceCardView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    /// What this card is actually observing, for non-manifest kinds.
+    private var targetDescription: String? {
+        switch binding.kind {
+        case .manifest:
+            return nil
+        case .launchd:
+            return binding.trimmedLaunchdLabel.map { "launchd · \($0)" }
+        case .process:
+            if let pidFile = binding.trimmedPIDFile {
+                return "pidfile · \(pidFile)"
+            }
+            return binding.trimmedProcessPattern.map { "pgrep -f · \($0)" }
+        case .command:
+            return binding.trimmedStatusCommand.map { "status · \($0)" }
         }
     }
 
@@ -237,37 +275,43 @@ struct ServiceCardView: View {
 
     private var controls: some View {
         HStack(spacing: 8) {
-            Button {
-                onStart()
-            } label: {
-                Label("Start", systemImage: "play.fill")
-            }
-            .disabled(runtime.isBusy || !binding.startCommandApproved)
-            .help("Run the start command and read its manifest")
-
-            if runtime.state == .paused {
+            if showsStartControl {
                 Button {
-                    onResume()
+                    onStart()
                 } label: {
-                    Label("Resume", systemImage: "play.circle")
+                    Label("Start", systemImage: "play.fill")
                 }
-                .disabled(runtime.isBusy || binding.resumePath == nil)
-            } else {
-                Button {
-                    onPause()
-                } label: {
-                    Label("Pause", systemImage: "pause.fill")
-                }
-                .disabled(runtime.isBusy || runtime.state != .running || binding.pausePath == nil)
+                .disabled(runtime.isBusy || startDisabled)
+                .help(startHelp)
             }
 
-            Button {
-                onStop()
-            } label: {
-                Label("Stop", systemImage: "stop.fill")
+            if binding.kind == .manifest {
+                if runtime.state == .paused {
+                    Button {
+                        onResume()
+                    } label: {
+                        Label("Resume", systemImage: "play.circle")
+                    }
+                    .disabled(runtime.isBusy || binding.resumePath == nil)
+                } else {
+                    Button {
+                        onPause()
+                    } label: {
+                        Label("Pause", systemImage: "pause.fill")
+                    }
+                    .disabled(runtime.isBusy || runtime.state != .running || binding.pausePath == nil)
+                }
             }
-            .disabled(runtime.isBusy || runtime.state == .offline || binding.stopPath == nil)
-            .help("Ask the service to stop")
+
+            if showsStopControl {
+                Button {
+                    onStop()
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .disabled(runtime.isBusy || runtime.state == .offline || stopDisabled)
+                .help(stopHelp)
+            }
 
             if panelURL != nil {
                 Button {
@@ -312,6 +356,47 @@ struct ServiceCardView: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
+    }
+
+    /// Manifest cards keep showing Start/Stop and disable them when they do not
+    /// apply. Provider kinds hide the controls entirely when the binding is
+    /// read-only or has no command.
+    private var showsStartControl: Bool {
+        binding.kind == .manifest || binding.canStart
+    }
+
+    private var showsStopControl: Bool {
+        binding.kind == .manifest || binding.canStop
+    }
+
+    private var startDisabled: Bool {
+        if binding.kind == .manifest {
+            return !binding.startCommandApproved
+        }
+        return runtime.state == .running || runtime.state == .starting
+    }
+
+    private var stopDisabled: Bool {
+        if binding.kind == .manifest {
+            return binding.stopPath == nil
+        }
+        return false
+    }
+
+    private var startHelp: String {
+        switch binding.kind {
+        case .manifest: return "Run the start command and read its manifest"
+        case .launchd: return "Ask launchd to start the job"
+        case .process, .command: return "Run the start command"
+        }
+    }
+
+    private var stopHelp: String {
+        switch binding.kind {
+        case .manifest: return "Ask the service to stop"
+        case .launchd: return "Unload the job with launchctl bootout"
+        case .process, .command: return "Run the stop command"
+        }
     }
 
     // MARK: - Helpers

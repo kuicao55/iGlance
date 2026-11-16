@@ -21,10 +21,16 @@ final class ServicesStore: ObservableObject {
     private let launcher: ServiceLauncher
     private let tokenStore: ServiceTokenStoring
     private let bindingStore: ServiceBindingStore
+    private let providers: [ServiceKind: ServiceProvider]
 
     private var pollTimer: Timer?
     private var lastPollAt: [UUID: Date] = [:]
-    private var inFlight: Set<UUID> = []
+    /// Probe requests in flight. Kept separate from `actionInFlight` so a
+    /// poll never makes Start/Stop silently do nothing (and vice versa).
+    private var pollInFlight: Set<UUID> = []
+    private var actionInFlight: Set<UUID> = []
+    /// A refresh requested while a probe was in flight, to run once it ends.
+    private var pendingRefresh: Set<UUID> = []
     private let historyBuffer = HistoryBuffer(capacity: 30)
 
     init(
@@ -37,6 +43,12 @@ final class ServicesStore: ObservableObject {
         self.launcher = launcher
         self.tokenStore = tokenStore
         self.bindingStore = bindingStore
+        self.providers = [
+            .manifest: ManifestProvider(client: client, launcher: launcher),
+            .launchd: LaunchdProvider(),
+            .process: ProcessProvider(),
+            .command: CommandProvider()
+        ]
 
         self.bindings = bindingStore.load()
         for binding in bindings {
@@ -60,6 +72,10 @@ final class ServicesStore: ObservableObject {
 
     func history(for id: UUID) -> [Double] {
         memoryHistory[id] ?? []
+    }
+
+    private func provider(for kind: ServiceKind) -> ServiceProvider {
+        providers[kind] ?? providers[.manifest]!
     }
 
     func hasToken(for id: UUID) -> Bool {
@@ -98,25 +114,40 @@ final class ServicesStore: ObservableObject {
         refreshSeconds: Double,
         token: String?,
         startCommandApproved: Bool,
-        manifest: ServiceManifest? = nil
+        manifest: ServiceManifest? = nil,
+        kind: ServiceKind = .manifest,
+        launchdLabel: String? = nil,
+        processPattern: String? = nil,
+        pidFile: String? = nil,
+        readOnly: Bool = false,
+        statusCommand: String? = nil,
+        stopCommand: String? = nil,
+        panelURL: String? = nil
     ) -> ServiceBinding? {
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = startCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !command.isEmpty else {
-            lastActionError = "A service needs a name and a start command."
+        var binding = ServiceBinding(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            startCommand: startCommand.trimmingCharacters(in: .whitespacesAndNewlines),
+            refreshSeconds: refreshSeconds,
+            kind: kind,
+            launchdLabel: Self.nilIfEmpty(launchdLabel),
+            processPattern: Self.nilIfEmpty(processPattern),
+            pidFile: Self.nilIfEmpty(pidFile),
+            readOnly: readOnly,
+            statusCommand: Self.nilIfEmpty(statusCommand),
+            stopCommand: Self.nilIfEmpty(stopCommand),
+            panelURL: Self.nilIfEmpty(panelURL),
+            startCommandApproved: startCommandApproved
+        )
+
+        if let error = Self.configurationError(for: binding) {
+            lastActionError = error
             return nil
         }
 
-        var binding = ServiceBinding(
-            name: name,
-            startCommand: command,
-            refreshSeconds: refreshSeconds,
-            startCommandApproved: startCommandApproved
-        )
         if let manifest {
             binding.apply(manifest)
         }
-        if let token, !token.isEmpty {
+        if binding.kind == .manifest, let token, !token.isEmpty {
             tokenStore.setToken(token, for: binding.id)
         }
 
@@ -129,7 +160,7 @@ final class ServicesStore: ObservableObject {
         runtimes[binding.id] = runtime
         persist()
 
-        if manifest != nil {
+        if manifest != nil || (binding.isProbeable && binding.kind != .manifest) {
             refresh(bindingID: binding.id)
         }
         return binding
@@ -142,24 +173,48 @@ final class ServicesStore: ObservableObject {
         refreshSeconds: Double,
         startCommandApproved: Bool,
         token: String?,
-        manifest: ServiceManifest? = nil
+        manifest: ServiceManifest? = nil,
+        kind: ServiceKind? = nil,
+        launchdLabel: String? = nil,
+        processPattern: String? = nil,
+        pidFile: String? = nil,
+        readOnly: Bool? = nil,
+        statusCommand: String? = nil,
+        stopCommand: String? = nil,
+        panelURL: String? = nil
     ) {
         guard let index = bindings.firstIndex(where: { $0.id == id }) else { return }
 
-        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = startCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, !command.isEmpty else {
-            lastActionError = "A service needs a name and a start command."
+        let original = bindings[index]
+        let previousFingerprint = original.controlFingerprint
+
+        bindings[index].name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        bindings[index].startCommand = startCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        bindings[index].refreshSeconds = max(2, refreshSeconds)
+        bindings[index].startCommandApproved = startCommandApproved
+        if let kind {
+            bindings[index].kind = kind
+        }
+        bindings[index].launchdLabel = Self.nilIfEmpty(launchdLabel)
+        bindings[index].processPattern = Self.nilIfEmpty(processPattern)
+        bindings[index].pidFile = Self.nilIfEmpty(pidFile)
+        if let readOnly {
+            bindings[index].readOnly = readOnly
+        }
+        bindings[index].statusCommand = Self.nilIfEmpty(statusCommand)
+        bindings[index].stopCommand = Self.nilIfEmpty(stopCommand)
+        bindings[index].panelURL = Self.nilIfEmpty(panelURL)
+
+        if let error = Self.configurationError(for: bindings[index]) {
+            lastActionError = error
+            // The invalid draft is not persisted; restore the previous binding
+            // so the store keeps matching services.json.
+            bindings[index] = original
             return
         }
 
-        let commandChanged = command != bindings[index].startCommand
-        bindings[index].name = name
-        bindings[index].startCommand = command
-        bindings[index].refreshSeconds = max(2, refreshSeconds)
-        bindings[index].startCommandApproved = startCommandApproved
-
-        if commandChanged {
+        let controlChanged = bindings[index].controlFingerprint != previousFingerprint
+        if controlChanged {
             bindings[index].clearDiscovery()
             var runtime = ServiceRuntime()
             runtime.state = .offline
@@ -167,8 +222,13 @@ final class ServicesStore: ObservableObject {
             memoryHistory[id] = []
         }
 
-        if let token {
-            tokenStore.setToken(token, for: id)
+        if bindings[index].kind == .manifest {
+            if let token {
+                tokenStore.setToken(token, for: id)
+            }
+        } else {
+            // Tokens only apply to the manifest protocol.
+            tokenStore.deleteToken(for: id)
         }
         if let manifest {
             bindings[index].apply(manifest)
@@ -180,7 +240,7 @@ final class ServicesStore: ObservableObject {
 
         persist()
         lastPollAt[id] = nil
-        if bindings[index].baseURL != nil {
+        if bindings[index].isProbeable {
             refresh(bindingID: id)
         }
     }
@@ -192,7 +252,9 @@ final class ServicesStore: ObservableObject {
         runtimes.removeValue(forKey: id)
         memoryHistory.removeValue(forKey: id)
         lastPollAt.removeValue(forKey: id)
-        inFlight.remove(id)
+        pollInFlight.remove(id)
+        actionInFlight.remove(id)
+        pendingRefresh.remove(id)
         if editor?.editingID == id {
             editor = nil
         }
@@ -223,7 +285,7 @@ final class ServicesStore: ObservableObject {
     private func pollTick() {
         let now = Date()
         for binding in bindings {
-            guard binding.baseURL != nil else { continue }
+            guard binding.isProbeable else { continue }
             let interval = max(2, binding.refreshSeconds)
             if let last = lastPollAt[binding.id], now.timeIntervalSince(last) < interval {
                 continue
@@ -237,56 +299,71 @@ final class ServicesStore: ObservableObject {
 
     func start(bindingID: UUID) {
         guard let binding = binding(for: bindingID) else { return }
-        guard binding.startCommandApproved else {
-            lastActionError = "This start command has not been approved. Edit the service to allow it."
+        guard binding.canStart else {
+            lastActionError = controlError(for: binding, action: "start")
             return
         }
-        guard !inFlight.contains(bindingID) else { return }
+        guard !actionInFlight.contains(bindingID) else { return }
 
-        inFlight.insert(bindingID)
+        actionInFlight.insert(bindingID)
         var runtime = runtime(for: bindingID)
         runtime.state = .starting
         runtime.lastError = nil
         runtime.isBusy = true
         runtimes[bindingID] = runtime
 
-        let command = binding.startCommand
-        let launcher = self.launcher
+        let provider = self.provider(for: binding.kind)
 
         Task {
-            let result: Result<ServiceLaunchOutcome, Error> = await Task.detached(priority: .userInitiated) {
-                Result { try launcher.launch(bindingID: bindingID, command: command) }
-            }.value
-
-            await MainActor.run {
-                self.inFlight.remove(bindingID)
-                self.applyLaunchResult(result, bindingID: bindingID)
+            do {
+                let manifest = try await provider.start(binding)
+                await MainActor.run {
+                    self.actionInFlight.remove(bindingID)
+                    var runtime = self.runtime(for: bindingID)
+                    runtime.isBusy = false
+                    if let manifest {
+                        if let index = self.bindings.firstIndex(where: { $0.id == bindingID }) {
+                            self.bindings[index].apply(manifest)
+                            self.persist()
+                        }
+                        runtime.manifest = manifest
+                        runtime.state = .running
+                        runtime.lastError = nil
+                    }
+                    self.runtimes[bindingID] = runtime
+                    self.lastPollAt[bindingID] = Date()
+                    self.refresh(bindingID: bindingID)
+                }
+            } catch {
+                await MainActor.run {
+                    self.applyFailure(error, bindingID: bindingID, clearAction: true)
+                }
             }
         }
     }
 
     func stop(bindingID: UUID) {
         guard let binding = binding(for: bindingID) else { return }
-        guard binding.stopPath != nil else {
-            lastActionError = "\(binding.name) does not expose a stop endpoint."
+        guard binding.canStop else {
+            lastActionError = controlError(for: binding, action: "stop")
             return
         }
-        guard !inFlight.contains(bindingID) else { return }
+        guard !actionInFlight.contains(bindingID) else { return }
 
-        inFlight.insert(bindingID)
+        actionInFlight.insert(bindingID)
         var runtime = runtime(for: bindingID)
         runtime.isBusy = true
         runtime.lastError = nil
         runtimes[bindingID] = runtime
 
         let token = tokenStore.token(for: bindingID)
-        let client = self.client
+        let provider = self.provider(for: binding.kind)
 
         Task {
             do {
-                try await client.perform(.stop, binding: binding, token: token)
+                try await provider.perform(.stop, for: binding, token: token)
                 await MainActor.run {
-                    self.inFlight.remove(bindingID)
+                    self.actionInFlight.remove(bindingID)
                     var runtime = self.runtime(for: bindingID)
                     runtime.isBusy = false
                     runtime.state = .stopping
@@ -301,11 +378,11 @@ final class ServicesStore: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
-                    self.inFlight.remove(bindingID)
+                    self.actionInFlight.remove(bindingID)
                     self.applyActionFailure(
                         error,
                         bindingID: bindingID,
-                        connectionFailureMeansStopped: true
+                        connectionFailureMeansStopped: binding.kind == .manifest
                     )
                 }
             }
@@ -314,7 +391,11 @@ final class ServicesStore: ObservableObject {
 
     func perform(_ action: ServiceControlAction, bindingID: UUID) {
         guard let binding = binding(for: bindingID) else { return }
-        guard !inFlight.contains(bindingID) else { return }
+        guard !actionInFlight.contains(bindingID) else { return }
+        guard binding.kind == .manifest else {
+            lastActionError = "\(binding.name) does not support \(action.rawValue)."
+            return
+        }
 
         let path: String?
         switch action {
@@ -328,7 +409,7 @@ final class ServicesStore: ObservableObject {
             return
         }
 
-        inFlight.insert(bindingID)
+        actionInFlight.insert(bindingID)
         var runtime = runtime(for: bindingID)
         runtime.isBusy = true
         runtime.lastError = nil
@@ -336,19 +417,19 @@ final class ServicesStore: ObservableObject {
         runtimes[bindingID] = runtime
 
         let token = tokenStore.token(for: bindingID)
-        let client = self.client
+        let provider = self.provider(for: binding.kind)
 
         Task {
             do {
-                try await client.perform(action, binding: binding, token: token)
+                try await provider.perform(action, for: binding, token: token)
                 await MainActor.run {
-                    self.inFlight.remove(bindingID)
+                    self.actionInFlight.remove(bindingID)
                     self.lastPollAt[bindingID] = Date()
                     self.refresh(bindingID: bindingID)
                 }
             } catch {
                 await MainActor.run {
-                    self.inFlight.remove(bindingID)
+                    self.actionInFlight.remove(bindingID)
                     self.applyActionFailure(
                         error,
                         bindingID: bindingID,
@@ -361,25 +442,27 @@ final class ServicesStore: ObservableObject {
 
     func refresh(bindingID: UUID) {
         guard let binding = binding(for: bindingID) else { return }
-        guard binding.baseURL != nil else { return }
-        guard !inFlight.contains(bindingID) else { return }
+        guard binding.isProbeable else { return }
+        guard !pollInFlight.contains(bindingID) else {
+            pendingRefresh.insert(bindingID)
+            return
+        }
 
-        inFlight.insert(bindingID)
+        pollInFlight.insert(bindingID)
         lastPollAt[bindingID] = Date()
 
         let token = tokenStore.token(for: bindingID)
-        let client = self.client
+        let provider = self.provider(for: binding.kind)
 
         Task {
             do {
-                let status = try await client.fetchStatus(binding: binding, token: token)
-                var fetchedMemory = status.memory
-                if fetchedMemory == nil, binding.memoryPath != nil {
-                    fetchedMemory = try? await client.fetchMemory(binding: binding, token: token)
-                }
-                let memory = fetchedMemory
+                let probe = try await provider.status(for: binding, token: token)
                 await MainActor.run {
-                    self.applyStatus(status, memory: memory, bindingID: bindingID)
+                    self.applyStatus(
+                        probe.status,
+                        memory: probe.memory ?? probe.status.memory,
+                        bindingID: bindingID
+                    )
                 }
             } catch {
                 await MainActor.run {
@@ -422,44 +505,37 @@ final class ServicesStore: ObservableObject {
         )
     }
 
-    // MARK: - Result application
-
-    private func applyLaunchResult(_ result: Result<ServiceLaunchOutcome, Error>, bindingID: UUID) {
-        guard bindings.contains(where: { $0.id == bindingID }) else { return }
-        var runtime = runtime(for: bindingID)
-        runtime.isBusy = false
-
-        switch result {
-        case .success(let outcome):
-            if let index = bindings.firstIndex(where: { $0.id == bindingID }) {
-                bindings[index].apply(outcome.manifest)
-                persist()
-            }
-            runtime.manifest = outcome.manifest
-            runtime.state = .running
-            runtime.lastError = nil
-            runtimes[bindingID] = runtime
-            refresh(bindingID: bindingID)
-
-        case .failure(let error):
-            runtime.state = .offline
-            runtime.lastError = error.localizedDescription
-            runtimes[bindingID] = runtime
-        }
+    /// Probes a draft binding from the editor without saving it.
+    func testStatus(for binding: ServiceBinding) async throws -> ServiceProbeResult {
+        try await provider(for: binding.kind).status(for: binding, token: nil)
     }
 
+    /// Non-Apple launchd labels currently loaded in the user's gui domain.
+    func loadedLaunchdLabels() async -> [String] {
+        guard let launchd = provider(for: .launchd) as? LaunchdProvider else { return [] }
+        return await launchd.loadedLabels()
+    }
+
+    // MARK: - Result application
+
     private func applyStatus(_ status: ServiceStatusResponse, memory: ServiceMemory?, bindingID: UUID) {
-        inFlight.remove(bindingID)
+        pollInFlight.remove(bindingID)
         guard bindings.contains(where: { $0.id == bindingID }) else { return }
         var runtime = runtime(for: bindingID)
 
-        runtime.state = ServiceState.from(status)
+        let newState = ServiceState.from(status)
+        runtime.state = newState
         runtime.pid = status.pid
         runtime.startedAt = status.startedAt
         runtime.uptimeSec = status.uptimeSec
         runtime.isBusy = false
-        runtime.lastSeen = Date()
-        runtime.lastError = nil
+        // A probe that reports offline is still a successful probe. Only move
+        // `lastSeen` forward while the service is actually up, otherwise the
+        // card would say "last seen just now" about a stopped launchd job.
+        if newState == .running || newState == .paused || newState == .stopping {
+            runtime.lastSeen = Date()
+        }
+        runtime.lastError = status.error
 
         if let memory {
             runtime.memory = memory
@@ -493,29 +569,47 @@ final class ServicesStore: ObservableObject {
         }
 
         runtimes[bindingID] = runtime
+        flushPendingRefresh(for: bindingID)
     }
 
-    private func applyFailure(_ error: Error, bindingID: UUID) {
-        inFlight.remove(bindingID)
+    private func applyFailure(_ error: Error, bindingID: UUID, clearAction: Bool = false) {
+        pollInFlight.remove(bindingID)
+        if clearAction {
+            actionInFlight.remove(bindingID)
+        }
         guard bindings.contains(where: { $0.id == bindingID }) else { return }
         var runtime = runtime(for: bindingID)
         runtime.isBusy = false
 
-        let clientError = error as? ServiceClientError
-        switch clientError {
-        case .unauthorized:
-            runtime.state = .unauthorized
-            runtime.lastError = error.localizedDescription
-        case .connectionFailed:
+        if error is ServiceProviderError {
+            // A failed probe means the provider could not observe the service.
+            // Show offline plus the provider's explanation.
             runtime.state = .offline
             runtime.lastError = error.localizedDescription
-        default:
-            runtime.lastError = error.localizedDescription
-            if runtime.state == .starting { runtime.state = .offline }
+        } else {
+            let clientError = error as? ServiceClientError
+            switch clientError {
+            case .unauthorized:
+                runtime.state = .unauthorized
+                runtime.lastError = error.localizedDescription
+            case .connectionFailed:
+                runtime.state = .offline
+                runtime.lastError = error.localizedDescription
+            default:
+                runtime.lastError = error.localizedDescription
+                if runtime.state == .starting { runtime.state = .offline }
+            }
         }
 
         // Deliberately keep the last memory snapshot and lastSeen timestamp.
         runtimes[bindingID] = runtime
+        flushPendingRefresh(for: bindingID)
+    }
+
+    /// Runs a refresh that was requested while another probe was in flight.
+    private func flushPendingRefresh(for bindingID: UUID) {
+        guard pendingRefresh.remove(bindingID) != nil else { return }
+        refresh(bindingID: bindingID)
     }
 
     private func applyActionFailure(
@@ -523,10 +617,16 @@ final class ServicesStore: ObservableObject {
         bindingID: UUID,
         connectionFailureMeansStopped: Bool
     ) {
-        inFlight.remove(bindingID)
+        actionInFlight.remove(bindingID)
         guard bindings.contains(where: { $0.id == bindingID }) else { return }
         var runtime = runtime(for: bindingID)
         runtime.isBusy = false
+
+        guard !(error is ServiceProviderError) else {
+            runtime.lastError = error.localizedDescription
+            runtimes[bindingID] = runtime
+            return
+        }
 
         let clientError = error as? ServiceClientError
         switch clientError {
@@ -582,6 +682,65 @@ final class ServicesStore: ObservableObject {
             binding.endpoints = endpoints
         }
         return changed
+    }
+
+    // MARK: - Validation
+
+    private func controlError(for binding: ServiceBinding, action: String) -> String {
+        if binding.readOnly {
+            return "\(binding.name) is read-only. Edit the service to allow control."
+        }
+        if !binding.startCommandApproved {
+            return "Controlling \(binding.name) has not been approved. Edit the service to allow it."
+        }
+        switch binding.kind {
+        case .manifest:
+            return action == "start"
+                ? "\(binding.name) needs a start command."
+                : "\(binding.name) does not expose a stop endpoint."
+        case .launchd:
+            return "\(binding.name) needs a launchd label."
+        case .process:
+            return action == "start"
+                ? "\(binding.name) has no start command. Add one or turn on Read-only."
+                : "\(binding.name) has no stop command. Add one or turn on Read-only."
+        case .command:
+            return action == "start"
+                ? "\(binding.name) has no start command. Add one or turn on Read-only."
+                : "\(binding.name) has no stop command. Add one or turn on Read-only."
+        }
+    }
+
+    private static func configurationError(for binding: ServiceBinding) -> String? {
+        if binding.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "A service needs a name."
+        }
+
+        switch binding.kind {
+        case .manifest:
+            if binding.trimmedStartCommand.isEmpty {
+                return "A manifest service needs a start command."
+            }
+        case .launchd:
+            if binding.trimmedLaunchdLabel == nil {
+                return "A launchd service needs a label."
+            }
+        case .process:
+            if binding.trimmedProcessPattern == nil && binding.trimmedPIDFile == nil {
+                return "A process service needs a pgrep pattern or a PID file."
+            }
+        case .command:
+            if binding.trimmedStatusCommand == nil {
+                return "A command service needs a status command."
+            }
+        }
+        return nil
+    }
+
+    private static func nilIfEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func persist() {

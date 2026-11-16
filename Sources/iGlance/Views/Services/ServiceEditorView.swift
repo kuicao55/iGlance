@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 import UniformTypeIdentifiers
 
 /// Add / Edit Service, shown as a page inside the Services pane.
@@ -18,9 +19,10 @@ struct ServiceEditorView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    typePicker
                     nameField
-                    commandField
-                    tokenField
+                    kindFields
+                    panelURLField
                     refreshField
                     approvalToggle
                     manifestSection
@@ -32,15 +34,38 @@ struct ServiceEditorView: View {
             Divider()
             toolbar
         }
-        .onChange(of: model.startCommand) { _, newValue in
-            guard let existing = existingBinding, newValue != existing.startCommand else { return }
-            // A changed command must be re-approved before iGlance will run it.
+        .onChange(of: model.controlFingerprint) { _, newValue in
+            guard let existing = existingBinding, newValue != existing.controlFingerprint else { return }
+            // A changed control target must be re-approved before iGlance will
+            // run commands or act on the service.
             model.approved = false
             model.parsedManifest = nil
+        }
+        .onChange(of: model.kind) { _, newValue in
+            model.readOnly = (newValue == .launchd)
+            model.testResult = nil
+            model.parsedManifest = nil
+            // A new provider binding must be approved explicitly before it can
+            // run anything. Manifest bindings keep their historical default.
+            if newValue != .manifest && model.editingID == nil {
+                model.approved = false
+            }
+        }
+        .onChange(of: model.readOnly) { oldValue, newValue in
+            // Turning observation-only off enables Start/Stop, so require an
+            // explicit approval instead of inheriting the pre-read-only state.
+            if oldValue && !newValue {
+                model.approved = false
+            }
         }
         .onChange(of: model.token) { _, newValue in
             if !newValue.isEmpty {
                 model.removesStoredToken = false
+            }
+        }
+        .task(id: model.kind) {
+            if model.kind == .launchd {
+                await loadLaunchdLabels()
             }
         }
     }
@@ -57,7 +82,7 @@ struct ServiceEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.isEditing ? "Edit Service" : "Add Service")
                     .font(.headline)
-                Text("Tokens are stored in the macOS Keychain")
+                Text(headerSubtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -76,7 +101,51 @@ struct ServiceEditorView: View {
         .padding(.vertical, 12)
     }
 
-    // MARK: - Fields
+    private var headerSubtitle: String {
+        model.kind == .manifest
+            ? "Tokens are stored in the macOS Keychain"
+            : "iGlance observes and optionally controls this service"
+    }
+
+    // MARK: - Type
+
+    private var typePicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fieldLabel("Type")
+            Picker("Type", selection: $model.kind) {
+                ForEach(ServiceKind.allCases) { kind in
+                    Text(kind.label).tag(kind)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            Text(model.kind.explanation)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private var kindFields: some View {
+        switch model.kind {
+        case .manifest:
+            commandField
+            tokenField
+        case .launchd:
+            launchdFields
+            readOnlyToggle
+        case .process:
+            processFields
+            startStopCommands
+            readOnlyToggle
+        case .command:
+            commandFields
+            startStopCommands
+            readOnlyToggle
+        }
+    }
 
     private var nameField: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -155,6 +224,181 @@ struct ServiceEditorView: View {
         }
     }
 
+    // MARK: - launchd
+
+    private var launchdFields: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                fieldLabel("Launchd label")
+                Spacer()
+                Menu {
+                    if model.isLoadingLabels {
+                        Text("Loading…")
+                    } else if model.loadedLaunchdLabels.isEmpty {
+                        Text("No non-Apple jobs loaded")
+                    } else {
+                        ForEach(model.loadedLaunchdLabels, id: \.self) { label in
+                            Button(label) {
+                                model.launchdLabel = label
+                            }
+                        }
+                    }
+                } label: {
+                    Text("Choose Loaded Job…")
+                        .font(.caption2)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Choose from launchctl list")
+            }
+
+            TextField("ai.hermes.gateway", text: $model.launchdLabel)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(fieldBorder)
+
+            Text("Observed in gui/\(getuid()) and the system domain (LaunchDaemons). Read-only is recommended so iGlance never competes with launchd.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    // MARK: - process / command
+
+    private var processFields: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            fieldLabel("Match by process")
+            TextField("pgrep -f pattern, e.g. hermes gateway", text: $model.processPattern)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(fieldBorder)
+
+            fieldLabel("…or PID file")
+            TextField("/tmp/hermes.pid", text: $model.pidFile)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(fieldBorder)
+
+            Text("The pattern is passed to pgrep as a literal argument. Child processes are included in the memory total. If both are set, the PID file wins when it contains a live PID.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var commandFields: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            commandTextField(
+                "Status command",
+                placeholder: "hermes gateway status",
+                text: $model.statusCommand,
+                hint: "Exit 0 means running. It may also print a JSON status object with state, pid, uptime_sec, and memory."
+            )
+        }
+    }
+
+    private var startStopCommands: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            commandTextField(
+                "Start command (optional)",
+                placeholder: "hermes gateway start",
+                text: $model.startCommand,
+                hint: "Runs only after you approve control. Leave empty for observation-only."
+            )
+            commandTextField(
+                "Stop command (optional)",
+                placeholder: "hermes gateway stop",
+                text: $model.stopCommand,
+                hint: nil
+            )
+        }
+    }
+
+    private func commandTextField(
+        _ title: String,
+        placeholder: String,
+        text: Binding<String>,
+        hint: String?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel(title)
+            TextField(placeholder, text: text, axis: .vertical)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .lineLimit(1...3)
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(fieldBorder)
+
+            if let hint {
+                Text(hint)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var readOnlyToggle: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Read-only (observe only)", isOn: $model.readOnly)
+                .font(.caption)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
+            Text(readOnlyHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var readOnlyHint: String {
+        switch model.kind {
+        case .manifest:
+            return ""
+        case .launchd:
+            return "Recommended for launchd. iGlance is not the supervisor; Stop unloads the job with launchctl bootout."
+        case .process, .command:
+            return "No start or stop command is ever run while this is on."
+        }
+    }
+
+    private var panelURLField: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            fieldLabel("Panel URL (optional)")
+            TextField("https://hermes.gateway/router", text: $model.panelURL)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(fieldBorder)
+
+            Text(panelURLHint)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var panelURLHint: String {
+        switch model.kind {
+        case .manifest:
+            return "Requested if the service does not report its own panel (urls.panel or endpoints.panel). http(s) only."
+        case .launchd, .process, .command:
+            return "Adds an Open Panel button to the card while the service is running or paused. http(s) only."
+        }
+    }
+
+    // MARK: - Common fields
+
     private var refreshField: some View {
         HStack(spacing: 8) {
             Text("Refresh every \(Int(model.refreshSeconds), format: .number)s")
@@ -165,70 +409,96 @@ struct ServiceEditorView: View {
         }
     }
 
+    @ViewBuilder
     private var approvalToggle: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle("Allow iGlance to run this command and control the service", isOn: $model.approved)
-                .font(.caption)
-                .toggleStyle(.switch)
-                .controlSize(.small)
+        if !model.readOnly {
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(approvalTitle, isOn: $model.approved)
+                    .font(.caption)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
 
-            if !model.approved {
-                Text("Start, Pause, Resume, Stop, and Test Start stay disabled until this is on.")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
+                if !model.approved {
+                    Text("Start, Stop, and Test stay disabled until this is on.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
         }
     }
 
+    private var approvalTitle: String {
+        switch model.kind {
+        case .manifest:
+            return "Allow iGlance to run this command and control the service"
+        case .launchd:
+            return "Allow iGlance to start and stop this launchd job"
+        case .process:
+            return "Allow iGlance to run the start/stop commands and control the processes"
+        case .command:
+            return "Allow iGlance to run the start/stop commands and control the service"
+        }
+    }
+
     private var manifestSection: some View {
-        DisclosureGroup(isExpanded: $model.showsManifest) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Paste an IGLANCE_SERVICE_MANIFEST line (or just its JSON) when the start command can't print one.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                TextField("IGLANCE_SERVICE_MANIFEST {…}", text: $model.manifestLine, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 10, design: .monospaced))
-                    .lineLimit(3...5)
-                    .padding(8)
-                    .background(fieldBackground)
-                    .overlay(fieldBorder)
-
-                HStack(spacing: 8) {
-                    Button("Use Manifest", action: applyManifestLine)
-                        .controlSize(.small)
-                    if let parsedManifest = model.parsedManifest {
-                        Text("\(parsedManifest.service.id) · \(parsedManifest.baseURL.absoluteString)")
+        Group {
+            if model.kind == .manifest {
+                DisclosureGroup(isExpanded: $model.showsManifest) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Paste an IGLANCE_SERVICE_MANIFEST line (or just its JSON) when the start command can't print one.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
+                            .fixedSize(horizontal: false, vertical: true)
 
-                if let existing = existingBinding, model.parsedManifest == nil, let baseURL = existing.baseURL {
-                    Text("Cached: \(baseURL.absoluteString) · \(existing.endpoints?.count ?? 0) endpoints")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        TextField("IGLANCE_SERVICE_MANIFEST {…}", text: $model.manifestLine, axis: .vertical)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 10, design: .monospaced))
+                            .lineLimit(3...5)
+                            .padding(8)
+                            .background(fieldBackground)
+                            .overlay(fieldBorder)
+
+                        HStack(spacing: 8) {
+                            Button("Use Manifest", action: applyManifestLine)
+                                .controlSize(.small)
+                            if let parsedManifest = model.parsedManifest {
+                                Text("\(parsedManifest.service.id) · \(parsedManifest.baseURL.absoluteString)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        if let existing = existingBinding, model.parsedManifest == nil, let baseURL = existing.baseURL {
+                            Text("Cached: \(baseURL.absoluteString) · \(existing.endpoints?.count ?? 0) endpoints")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text("Manifest (optional)")
+                        .font(.caption.weight(.medium))
                 }
             }
-            .padding(.top, 6)
-        } label: {
-            Text("Manifest (optional)")
-                .font(.caption.weight(.medium))
         }
     }
 
     @ViewBuilder
     private var warnings: some View {
-        if let baseURL = effectiveBaseURL, !ServiceManifestParser.isLoopback(baseURL) {
+        if model.kind == .manifest,
+           let baseURL = effectiveBaseURL,
+           !ServiceManifestParser.isLoopback(baseURL) {
             warning("This is not a loopback address (\(baseURL.absoluteString)). Plain HTTP to another host is not recommended.")
         }
 
         if let existing = existingBinding, !existing.startCommandApproved, model.approved {
-            warning("Only enable this if you trust the command above.")
+            warning("Only enable this if you trust the command and the service.")
+        }
+
+        if model.kind == .launchd, !model.readOnly {
+            warning("Stopping a launchd job unloads it. launchd will load it again at the next login.")
         }
     }
 
@@ -266,16 +536,24 @@ struct ServiceEditorView: View {
                     .controlSize(.mini)
             }
 
-            Button("Test Start") {
-                runTestStart()
-            }
-            .disabled(model.isTesting || model.trimmedCommand.isEmpty || !model.approved)
-            .help("Run the start command and read the manifest")
+            if model.kind == .manifest {
+                Button("Test Start") {
+                    runTestStart()
+                }
+                .disabled(model.isTesting || model.trimmedCommand.isEmpty || !model.approved)
+                .help("Run the start command and read the manifest")
 
-            Button("Test Connection") {
-                runTestConnection()
+                Button("Test Connection") {
+                    runTestConnection()
+                }
+                .disabled(model.isTesting || effectiveBaseURL == nil)
+            } else {
+                Button("Test Status") {
+                    runTestStatus()
+                }
+                .disabled(model.isTesting || !model.isProbeable)
+                .help("Probe the service without saving")
             }
-            .disabled(model.isTesting || effectiveBaseURL == nil)
 
             Spacer()
 
@@ -314,22 +592,24 @@ struct ServiceEditorView: View {
     }
 
     private func save() {
-        guard !model.trimmedName.isEmpty else {
-            model.testResult = .failure("A name is required.")
-            return
-        }
-        guard !model.trimmedCommand.isEmpty else {
-            model.testResult = .failure("A start command is required.")
+        if let error = configurationError() {
+            model.testResult = .failure(error)
             return
         }
 
         let manifest: ServiceManifest?
-        do {
-            manifest = try manifestForSaving()
-        } catch {
-            model.testResult = .failure(error.localizedDescription)
-            return
+        if model.kind == .manifest {
+            do {
+                manifest = try manifestForSaving()
+            } catch {
+                model.testResult = .failure(error.localizedDescription)
+                return
+            }
+        } else {
+            manifest = nil
         }
+
+        servicesStore.lastActionError = nil
 
         if let id = model.editingID {
             servicesStore.updateService(
@@ -339,8 +619,20 @@ struct ServiceEditorView: View {
                 refreshSeconds: model.refreshSeconds,
                 startCommandApproved: model.approved,
                 token: tokenOverride,
-                manifest: manifest
+                manifest: manifest,
+                kind: model.kind,
+                launchdLabel: model.trimmedLaunchdLabel,
+                processPattern: model.trimmedProcessPattern,
+                pidFile: model.trimmedPIDFile,
+                readOnly: model.readOnly,
+                statusCommand: model.trimmedStatusCommand,
+                stopCommand: model.trimmedStopCommand,
+                panelURL: model.trimmedPanelURL
             )
+            if let error = servicesStore.lastActionError {
+                model.testResult = .failure(error)
+                return
+            }
         } else {
             let binding = servicesStore.addService(
                 name: model.trimmedName,
@@ -348,7 +640,15 @@ struct ServiceEditorView: View {
                 refreshSeconds: model.refreshSeconds,
                 token: tokenOverride,
                 startCommandApproved: model.approved,
-                manifest: manifest
+                manifest: manifest,
+                kind: model.kind,
+                launchdLabel: model.trimmedLaunchdLabel,
+                processPattern: model.trimmedProcessPattern,
+                pidFile: model.trimmedPIDFile,
+                readOnly: model.readOnly,
+                statusCommand: model.trimmedStatusCommand,
+                stopCommand: model.trimmedStopCommand,
+                panelURL: model.trimmedPanelURL
             )
             guard binding != nil else {
                 model.testResult = .failure(servicesStore.lastActionError ?? "The service could not be saved.")
@@ -357,6 +657,32 @@ struct ServiceEditorView: View {
         }
 
         servicesStore.closeEditor()
+    }
+
+    private func configurationError() -> String? {
+        guard !model.trimmedName.isEmpty else {
+            return "A name is required."
+        }
+
+        switch model.kind {
+        case .manifest:
+            guard !model.trimmedCommand.isEmpty else {
+                return "A start command is required."
+            }
+        case .launchd:
+            guard !model.trimmedLaunchdLabel.isEmpty else {
+                return "A launchd label is required."
+            }
+        case .process:
+            guard !model.trimmedProcessPattern.isEmpty || !model.trimmedPIDFile.isEmpty else {
+                return "A pgrep pattern or a PID file is required."
+            }
+        case .command:
+            guard !model.trimmedStatusCommand.isEmpty else {
+                return "A status command is required."
+            }
+        }
+        return nil
     }
 
     private func manifestForSaving() throws -> ServiceManifest? {
@@ -382,6 +708,42 @@ struct ServiceEditorView: View {
                         "Manifest received from \(manifest.service.name)\(version): "
                         + "\(manifest.baseURL.absoluteString), \(manifest.endpoints.count) endpoints."
                     )
+                    model.isTesting = false
+                }
+            } catch {
+                await MainActor.run {
+                    model.testResult = .failure(error.localizedDescription)
+                    model.isTesting = false
+                }
+            }
+        }
+    }
+
+    private func runTestStatus() {
+        model.testResult = nil
+
+        guard model.isProbeable else {
+            model.testResult = .failure("The service needs a label, a process match, or a status command.")
+            return
+        }
+
+        model.isTesting = true
+        let draft = model.draftBinding()
+
+        Task {
+            do {
+                let probe = try await servicesStore.testStatus(for: draft)
+                await MainActor.run {
+                    let state = ServiceState.from(probe.status)
+                    let memory = probe.memory.map { memory -> String in
+                        memory.available ? Formatters.formatByteCount(memory.totalRssBytes) : "—"
+                    } ?? "—"
+                    let detail = probe.status.error.map { " — \($0)" } ?? ""
+                    let message = "\(state.label)"
+                        + (probe.status.pid.map { ", pid \($0)" } ?? "")
+                        + ", memory \(memory)"
+                        + detail
+                    model.testResult = probe.status.error == nil ? .success(message) : .failure(message)
                     model.isTesting = false
                 }
             } catch {
@@ -465,6 +827,16 @@ struct ServiceEditorView: View {
             return try ServiceManifestParser.parse(line: "\(ServiceManifestParser.prefix) \(value)")
         }
         return try ServiceManifestParser.parse(line: value)
+    }
+
+    private func loadLaunchdLabels() async {
+        guard !model.isLoadingLabels else { return }
+        await MainActor.run { model.isLoadingLabels = true }
+        let labels = await servicesStore.loadedLaunchdLabels()
+        await MainActor.run {
+            model.loadedLaunchdLabels = labels
+            model.isLoadingLabels = false
+        }
     }
 
     // MARK: - Helpers

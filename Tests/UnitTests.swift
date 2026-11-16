@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import Darwin
 @testable import iGlance
 
 // MARK: - Model Tests
@@ -250,6 +251,16 @@ class ProcessRunnerTests: XCTestCase {
     func testRunNonexistentCommand() {
         let result = runner.run("/nonexistent/command")
         XCTAssertNotEqual(result.terminationStatus, 0)
+    }
+
+    func testLaunchDetachedReportsImmediateFailure() {
+        let result = runner.launchDetachedShell("exit 7", grace: 2)
+        XCTAssertEqual(result.terminationStatus, 7)
+    }
+
+    func testLaunchDetachedLeavesRunningCommandAlone() {
+        let result = runner.launchDetachedShell("sleep 1", grace: 0.2)
+        XCTAssertEqual(result.terminationStatus, 0)
     }
 }
 
@@ -554,11 +565,15 @@ class ServiceStateTests: XCTestCase {
 class ServicePanelTests: XCTestCase {
     private func makeBinding(
         endpoints: [String: String]?,
-        baseURL: String? = "http://127.0.0.1:8790"
+        baseURL: String? = "http://127.0.0.1:8790",
+        kind: ServiceKind = .manifest,
+        panelURL: String? = nil
     ) -> ServiceBinding {
         ServiceBinding(
             name: "Gofer",
             startCommand: "true",
+            kind: kind,
+            panelURL: panelURL,
             baseURL: baseURL.flatMap { URL(string: $0) },
             endpoints: endpoints
         )
@@ -602,6 +617,54 @@ class ServicePanelTests: XCTestCase {
 
     func testNoPanelEndpointReturnsNil() {
         let binding = makeBinding(endpoints: ["status": "/api/v1/service"])
+        XCTAssertNil(binding.panelURL(status: nil))
+    }
+
+    // MARK: - Explicit panelURL (issue #4)
+
+    func testManifestStatusPanelBeatsStoredPanelURL() throws {
+        let binding = makeBinding(endpoints: nil, panelURL: "http://127.0.0.1:9999/")
+        let status = try status(#"{"urls":{"panel":"https://gofer.tailnet.ts.net/"}}"#)
+        XCTAssertEqual(binding.panelURL(status: status)?.absoluteString, "https://gofer.tailnet.ts.net/")
+    }
+
+    func testManifestEndpointPathBeatsStoredPanelURL() {
+        let binding = makeBinding(endpoints: ["panel": "/admin"], panelURL: "http://127.0.0.1:9999/fallback")
+        XCTAssertEqual(binding.panelURL(status: nil)?.absoluteString, "http://127.0.0.1:8790/admin")
+    }
+
+    func testManifestStoredPanelURLIsFallback() {
+        let binding = makeBinding(endpoints: nil, panelURL: "http://hermes.gateway/router")
+        XCTAssertEqual(binding.panelURL(status: nil)?.absoluteString, "http://hermes.gateway/router")
+    }
+
+    func testNonManifestUsesStoredPanelURL() {
+        for kind in [ServiceKind.launchd, .process, .command] {
+            let binding = makeBinding(
+                endpoints: nil,
+                kind: kind,
+                panelURL: "https://hermes.gateway/router"
+            )
+            XCTAssertEqual(
+                binding.panelURL(status: nil)?.absoluteString,
+                "https://hermes.gateway/router",
+                "kind \(kind.rawValue)"
+            )
+        }
+    }
+
+    func testStoredPanelURLTrimsWhitespace() {
+        let binding = makeBinding(endpoints: nil, kind: .process, panelURL: "  https://hermes.gateway/ui  ")
+        XCTAssertEqual(binding.panelURL(status: nil)?.absoluteString, "https://hermes.gateway/ui")
+    }
+
+    func testStoredPanelURLRejectsNonHTTP() {
+        let binding = makeBinding(endpoints: nil, kind: .launchd, panelURL: "file:///etc/passwd")
+        XCTAssertNil(binding.panelURL(status: nil))
+    }
+
+    func testStoredPanelURLEmptyReturnsNil() {
+        let binding = makeBinding(endpoints: nil, kind: .command, panelURL: "   ")
         XCTAssertNil(binding.panelURL(status: nil))
     }
 }
@@ -940,6 +1003,817 @@ class ServiceFormattingTests: XCTestCase {
 }
 
 
+// MARK: - Service kinds
+
+class ServiceKindMigrationTests: XCTestCase {
+    private let legacyJSON = """
+    [{
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Gofer",
+      "startCommand": "gofer start --manifest",
+      "refreshSeconds": 5,
+      "baseURL": "http://127.0.0.1:8790",
+      "endpoints": {"status": "/api/v1/service", "stop": "/api/v1/service/stop"},
+      "serviceID": "gofer",
+      "serviceVersion": "0.4.0",
+      "startCommandApproved": true
+    }]
+    """
+
+    func testDecodesLegacyBindingAsManifest() throws {
+        let bindings = try JSONDecoder().decode([ServiceBinding].self, from: Data(legacyJSON.utf8))
+        let binding = try XCTUnwrap(bindings.first)
+        XCTAssertEqual(binding.kind, .manifest)
+        XCTAssertFalse(binding.readOnly)
+        XCTAssertEqual(binding.startCommand, "gofer start --manifest")
+        XCTAssertEqual(binding.baseURL?.absoluteString, "http://127.0.0.1:8790")
+        XCTAssertTrue(binding.isProbeable)
+        XCTAssertTrue(binding.canStart)
+        XCTAssertTrue(binding.canStop)
+    }
+
+    func testStoreLoadsLegacyFile() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("services.json")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try legacyJSON.write(to: file, atomically: true, encoding: .utf8)
+
+        let loaded = ServiceBindingStore(fileURL: file).load()
+        XCTAssertEqual(loaded.count, 1)
+        XCTAssertEqual(loaded.first?.kind, .manifest)
+    }
+
+    func testUnknownKindFallsBackToManifest() throws {
+        let json = """
+        [{
+          "id": "33333333-3333-3333-3333-333333333333",
+          "name": "Future",
+          "startCommand": "future start",
+          "kind": "container",
+          "startCommandApproved": true
+        }]
+        """
+        let binding = try XCTUnwrap(
+            try JSONDecoder().decode([ServiceBinding].self, from: Data(json.utf8)).first
+        )
+        XCTAssertEqual(binding.kind, .manifest)
+    }
+
+    func testMissingApprovalDecodesAsUnapproved() throws {
+        let json = """
+        [{
+          "id": "44444444-4444-4444-4444-444444444444",
+          "name": "Legacy",
+          "startCommand": "legacy start"
+        }]
+        """
+        let binding = try XCTUnwrap(
+            try JSONDecoder().decode([ServiceBinding].self, from: Data(json.utf8)).first
+        )
+        XCTAssertFalse(binding.startCommandApproved)
+    }
+
+    func testLaunchdWithoutReadOnlyDefaultsToReadOnly() throws {
+        let json = """
+        [{
+          "id": "22222222-2222-2222-2222-222222222222",
+          "name": "Hermes",
+          "startCommand": "",
+          "kind": "launchd",
+          "launchdLabel": "ai.hermes.gateway",
+          "startCommandApproved": true
+        }]
+        """
+        let binding = try XCTUnwrap(
+            try JSONDecoder().decode([ServiceBinding].self, from: Data(json.utf8)).first
+        )
+        XCTAssertEqual(binding.kind, .launchd)
+        XCTAssertTrue(binding.readOnly)
+        XCTAssertFalse(binding.canStart)
+        XCTAssertFalse(binding.canStop)
+        XCTAssertTrue(binding.isProbeable)
+    }
+
+    func testRoundTripsNewFields() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("services.json")
+        let binding = ServiceBinding(
+            name: "Hermes",
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: false,
+            statusCommand: "hermes gateway status",
+            stopCommand: "hermes gateway stop",
+            panelURL: "https://hermes.gateway/router",
+            startCommandApproved: true
+        )
+
+        let store = ServiceBindingStore(fileURL: file)
+        try store.save([binding])
+        XCTAssertEqual(store.load(), [binding])
+    }
+
+    func testLegacyJSONDefaultsPanelURLToNil() throws {
+        let json = """
+        [{
+          "id": "55555555-5555-5555-5555-555555555555",
+          "name": "Gofer",
+          "startCommand": "gofer start --manifest",
+          "startCommandApproved": true
+        }]
+        """
+        let binding = try XCTUnwrap(
+            try JSONDecoder().decode([ServiceBinding].self, from: Data(json.utf8)).first
+        )
+        XCTAssertNil(binding.panelURL)
+    }
+}
+
+class ServiceCapabilityTests: XCTestCase {
+    func testManifestCapabilitiesFollowEndpoints() {
+        let binding = ServiceBinding(
+            name: "Gofer",
+            startCommand: "gofer start --manifest",
+            baseURL: URL(string: "http://127.0.0.1:8790"),
+            endpoints: ["status": "/status", "pause": "/pause", "resume": "/resume", "stop": "/stop"],
+            startCommandApproved: true
+        )
+        XCTAssertTrue(binding.isProbeable)
+        XCTAssertTrue(binding.canStart)
+        XCTAssertTrue(binding.canStop)
+        XCTAssertTrue(binding.canPause)
+        XCTAssertTrue(binding.canResume)
+        XCTAssertFalse(binding.canToggle)
+    }
+
+    func testManifestWithoutEndpointsIsNotProbeable() {
+        let binding = ServiceBinding(name: "Gofer", startCommand: "gofer start", startCommandApproved: true)
+        XCTAssertFalse(binding.isProbeable)
+    }
+
+    func testLaunchdReadOnlyHidesControls() {
+        let binding = ServiceBinding(
+            name: "Hermes",
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true,
+            startCommandApproved: true
+        )
+        XCTAssertTrue(binding.isProbeable)
+        XCTAssertFalse(binding.canStart)
+        XCTAssertFalse(binding.canStop)
+    }
+
+    func testLaunchdControlRequiresApproval() {
+        let approved = ServiceBinding(
+            name: "Hermes",
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: false,
+            startCommandApproved: true
+        )
+        XCTAssertTrue(approved.canStart)
+        XCTAssertTrue(approved.canStop)
+
+        let unapproved = ServiceBinding(
+            name: "Hermes",
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: false,
+            startCommandApproved: false
+        )
+        XCTAssertFalse(unapproved.canStart)
+        XCTAssertFalse(unapproved.canStop)
+    }
+
+    func testProcessCapabilitiesDependOnCommands() {
+        let observeOnly = ServiceBinding(
+            name: "Hermes",
+            kind: .process,
+            processPattern: "hermes gateway",
+            readOnly: true
+        )
+        XCTAssertTrue(observeOnly.isProbeable)
+        XCTAssertFalse(observeOnly.canStart)
+        XCTAssertFalse(observeOnly.canStop)
+
+        let controllable = ServiceBinding(
+            name: "Hermes",
+            kind: .process,
+            processPattern: "hermes gateway",
+            readOnly: false,
+            stopCommand: "hermes gateway stop",
+            startCommandApproved: true
+        )
+        XCTAssertFalse(controllable.canStart) // no start command
+        XCTAssertTrue(controllable.canStop)
+    }
+
+    func testPIDFileAlsoMakesProcessProbeable() {
+        let binding = ServiceBinding(name: "Worker", kind: .process, pidFile: "/tmp/worker.pid")
+        XCTAssertTrue(binding.isProbeable)
+    }
+
+    func testCommandKindRequiresStatusCommand() {
+        let binding = ServiceBinding(name: "Custom", kind: .command, readOnly: true)
+        XCTAssertFalse(binding.isProbeable)
+        XCTAssertFalse(binding.canStart)
+
+        let probed = ServiceBinding(name: "Custom", kind: .command, readOnly: true, statusCommand: "true")
+        XCTAssertTrue(probed.isProbeable)
+    }
+}
+
+class ServiceKindStoreTests: XCTestCase {
+    private func makeStore() -> ServicesStore {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("services.json")
+        return ServicesStore(
+            tokenStore: InMemoryServiceTokenStore(),
+            bindingStore: ServiceBindingStore(fileURL: file)
+        )
+    }
+
+    func testAddLaunchdServiceWithoutStartCommand() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true
+        )
+
+        XCTAssertNotNil(binding)
+        XCTAssertEqual(binding?.kind, .launchd)
+        XCTAssertEqual(binding?.launchdLabel, "ai.hermes.gateway")
+        XCTAssertTrue(binding?.readOnly ?? false)
+    }
+
+    func testAddProcessRequiresMatch() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .process
+        )
+        XCTAssertNil(binding)
+        XCTAssertNotNil(store.lastActionError)
+    }
+
+    func testAddCommandRequiresStatusCommand() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Custom",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .command
+        )
+        XCTAssertNil(binding)
+        XCTAssertNotNil(store.lastActionError)
+    }
+
+    func testLaunchdWithPanelURLGetsOpenPanelImmediately() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true,
+            panelURL: "https://hermes.gateway/router"
+        )!
+
+        // The store resolves the explicit panel URL even before the first poll.
+        XCTAssertEqual(store.panelURL(for: binding.id)?.absoluteString, "https://hermes.gateway/router")
+        // Offline state keeps the URL resolvable but the card disables the button.
+        XCTAssertEqual(store.runtime(for: binding.id).state, .offline)
+    }
+
+    func testUpdateServiceChangesPanelURL() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .process,
+            processPattern: "hermes gateway",
+            readOnly: true,
+            panelURL: "https://old.gateway/"
+        )!
+
+        store.updateService(
+            id: binding.id,
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            startCommandApproved: true,
+            token: nil,
+            kind: .process,
+            processPattern: "hermes gateway",
+            readOnly: true,
+            panelURL: "https://new.gateway/router"
+        )
+
+        XCTAssertEqual(store.panelURL(for: binding.id)?.absoluteString, "https://new.gateway/router")
+        // A panel URL is a UI target, not a control target: no approval reset.
+        XCTAssertTrue(store.binding(for: binding.id)?.startCommandApproved ?? false)
+    }
+
+    func testReadOnlyLaunchdStartIsRejected() {
+        let store = makeStore()
+        let binding = store.addService(
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            token: nil,
+            startCommandApproved: true,
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true
+        )!
+
+        store.start(bindingID: binding.id)
+
+        XCTAssertNotNil(store.lastActionError)
+        XCTAssertEqual(store.runtime(for: binding.id).state, .offline)
+    }
+
+    func testCommandStartAndStopThroughStore() async throws {
+        let store = makeStore()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let marker = directory.appendingPathComponent("running")
+
+        let binding = try XCTUnwrap(store.addService(
+            name: "Marker",
+            startCommand: "touch '\(marker.path)'",
+            refreshSeconds: 2,
+            token: nil,
+            startCommandApproved: true,
+            kind: .command,
+            readOnly: false,
+            statusCommand: "test -f '\(marker.path)'",
+            stopCommand: "rm -f '\(marker.path)'"
+        ))
+
+        store.start(bindingID: binding.id)
+        let running = await waitForState(.running, in: store, id: binding.id)
+        XCTAssertTrue(running, store.runtime(for: binding.id).lastError ?? "never became running")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        store.stop(bindingID: binding.id)
+        let stopped = await waitForState(.offline, in: store, id: binding.id)
+        XCTAssertTrue(stopped, "still \(store.runtime(for: binding.id).state.label)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    private func waitForState(
+        _ expected: ServiceState,
+        in store: ServicesStore,
+        id: UUID,
+        attempts: Int = 60
+    ) async -> Bool {
+        for _ in 0..<attempts {
+            let state = await MainActor.run { store.runtime(for: id).state }
+            if state == expected { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+
+    func testChangingKindClearsDiscovery() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("services.json")
+        let binding = ServiceBinding(
+            name: "Gofer",
+            startCommand: "gofer start --manifest",
+            baseURL: URL(string: "http://127.0.0.1:8790"),
+            endpoints: ["status": "/status"],
+            serviceID: "gofer",
+            startCommandApproved: true
+        )
+        try ServiceBindingStore(fileURL: file).save([binding])
+
+        let store = ServicesStore(
+            tokenStore: InMemoryServiceTokenStore(),
+            bindingStore: ServiceBindingStore(fileURL: file)
+        )
+        store.updateService(
+            id: binding.id,
+            name: "Hermes",
+            startCommand: "",
+            refreshSeconds: 5,
+            startCommandApproved: true,
+            token: nil,
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true
+        )
+
+        let updated = store.binding(for: binding.id)
+        XCTAssertEqual(updated?.kind, .launchd)
+        XCTAssertNil(updated?.baseURL)
+        XCTAssertNil(updated?.endpoints)
+        XCTAssertNil(updated?.serviceID)
+        XCTAssertEqual(store.runtime(for: binding.id).state, .offline)
+    }
+}
+
+class LaunchdParsingTests: XCTestCase {
+    private let runningOutput = """
+    gui/501/ai.hermes.gateway = {
+    \tactive count = 1
+    \tpath = /Users/kui/Library/LaunchAgents/ai.hermes.gateway.plist
+    \tstate = running
+    \tprogram = /usr/local/bin/hermes
+    \tpid = 4321
+    \truns = 3
+    \tlast exit code = 0
+    }
+    """
+
+    private let stoppedOutput = """
+    gui/501/ai.hermes.gateway = {
+    \tstate = not running
+    \truns = 7
+    \tlast exit code = 78
+    }
+    """
+
+    func testParsesRunningJob() throws {
+        let job = try XCTUnwrap(LaunchdProvider.parsePrint(runningOutput))
+        XCTAssertEqual(job.state, "running")
+        XCTAssertEqual(job.pid, 4321)
+        XCTAssertEqual(job.runs, 3)
+        XCTAssertEqual(job.lastExitStatus, 0)
+        XCTAssertTrue(job.isRunning)
+    }
+
+    func testParsesStoppedJob() throws {
+        let job = try XCTUnwrap(LaunchdProvider.parsePrint(stoppedOutput))
+        XCTAssertEqual(job.state, "not running")
+        XCTAssertNil(job.pid)
+        XCTAssertEqual(job.lastExitStatus, 78)
+        XCTAssertFalse(job.isRunning)
+    }
+
+    func testNeverExitedHasNoExitStatus() throws {
+        let output = """
+        gui/501/demo = {
+        \tstate = running
+        \tpid = 99
+        \tlast exit code = (never exited)
+        }
+        """
+        let job = try XCTUnwrap(LaunchdProvider.parsePrint(output))
+        XCTAssertEqual(job.pid, 99)
+        XCTAssertNil(job.lastExitStatus)
+    }
+
+    func testUnparseableOutputIsNotAJob() {
+        XCTAssertNil(LaunchdProvider.parsePrint("Bad request."))
+    }
+
+    func testParsesLoadedLabels() {
+        let output = """
+        PID\tStatus\tLabel
+        123\t0\thomebrew.mxcl.redis
+        -\t0\tcom.apple.Finder
+        456\t-9\tai.hermes.gateway
+        """
+        XCTAssertEqual(
+            LaunchdProvider.parseListLabels(output),
+            ["ai.hermes.gateway", "homebrew.mxcl.redis"]
+        )
+    }
+
+    func testMissingJobIsOffline() async throws {
+        let binding = ServiceBinding(
+            name: "Missing",
+            kind: .launchd,
+            launchdLabel: "iglance.test.\(UUID().uuidString)",
+            readOnly: true
+        )
+        let probe = try await LaunchdProvider().status(for: binding, token: nil)
+        XCTAssertEqual(probe.status.state, "offline")
+        XCTAssertNotNil(probe.status.error)
+    }
+
+    func testReadOnlyLaunchdStartIsUnsupported() async {
+        let binding = ServiceBinding(
+            name: "Hermes",
+            kind: .launchd,
+            launchdLabel: "ai.hermes.gateway",
+            readOnly: true
+        )
+        do {
+            _ = try await LaunchdProvider().start(binding)
+            XCTFail("Expected read-only start to fail")
+        } catch let error as ServiceProviderError {
+            guard case .unsupported = error else {
+                return XCTFail("Expected unsupported, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+}
+
+/// Opt-in end-to-end check against a real LaunchAgent.
+///
+/// Create a plist whose label is `$IGLANCE_TEST_LAUNCHD_LABEL`, bootstrap it
+/// into gui/<uid>, then run:
+///
+///     IGLANCE_TEST_LAUNCHD_LABEL=... swift test --filter LaunchdLifecycleTests
+///
+/// Without the environment variable the test is skipped, so normal test runs
+/// stay deterministic and never touch the user's launchd state.
+class LaunchdLifecycleTests: XCTestCase {
+    func testRealLaunchdLifecycle() async throws {
+        guard let label = ProcessInfo.processInfo.environment["IGLANCE_TEST_LAUNCHD_LABEL"],
+              !label.isEmpty else {
+            throw XCTSkip("Set IGLANCE_TEST_LAUNCHD_LABEL after bootstrapping a test agent.")
+        }
+
+        let provider = LaunchdProvider()
+        let binding = ServiceBinding(
+            name: "Integration",
+            kind: .launchd,
+            launchdLabel: label,
+            readOnly: false,
+            startCommandApproved: true
+        )
+
+        let probe = try await provider.status(for: binding, token: nil)
+        XCTAssertEqual(probe.status.state, "running", probe.status.error ?? "no error")
+        XCTAssertGreaterThan(probe.status.pid ?? 0, 0)
+        XCTAssertGreaterThan(probe.memory?.totalRssBytes ?? 0, 0)
+        XCTAssertNotNil(probe.status.uptimeSec)
+        XCTAssertNil(probe.status.error)
+
+        // Starting an already-running job must be harmless.
+        _ = try await provider.start(binding)
+
+        try await provider.perform(.stop, for: binding, token: nil)
+        try? await Task.sleep(for: .seconds(1))
+
+        let stopped = try await provider.status(for: binding, token: nil)
+        XCTAssertEqual(stopped.status.state, "offline")
+        XCTAssertNotNil(stopped.status.error)
+    }
+
+    func testStartBringsLoadedJobUp() async throws {
+        guard let label = ProcessInfo.processInfo.environment["IGLANCE_TEST_START_LABEL"],
+              !label.isEmpty else {
+            throw XCTSkip("Set IGLANCE_TEST_START_LABEL to a loaded, on-demand launchd job.")
+        }
+
+        let provider = LaunchdProvider()
+        let binding = ServiceBinding(
+            name: "Startable",
+            kind: .launchd,
+            launchdLabel: label,
+            readOnly: false,
+            startCommandApproved: true
+        )
+
+        let before = try await provider.status(for: binding, token: nil)
+        XCTAssertEqual(before.status.state, "offline")
+        XCTAssertNil(before.status.pid)
+
+        _ = try await provider.start(binding)
+        try? await Task.sleep(for: .seconds(1))
+
+        let after = try await provider.status(for: binding, token: nil)
+        XCTAssertEqual(after.status.state, "running", after.status.error ?? "no error")
+        XCTAssertGreaterThan(after.status.pid ?? 0, 0)
+
+        try await provider.perform(.stop, for: binding, token: nil)
+    }
+
+    func testLoadedButNotRunningJobIsOffline() async throws {
+        guard let label = ProcessInfo.processInfo.environment["IGLANCE_TEST_ONDEMAND_LABEL"],
+              !label.isEmpty else {
+            throw XCTSkip("Set IGLANCE_TEST_ONDEMAND_LABEL to a loaded, on-demand launchd job.")
+        }
+
+        let binding = ServiceBinding(
+            name: "OnDemand",
+            kind: .launchd,
+            launchdLabel: label,
+            readOnly: true
+        )
+        let probe = try await LaunchdProvider().status(for: binding, token: nil)
+        XCTAssertEqual(probe.status.state, "offline")
+        XCTAssertNil(probe.status.pid)
+        XCTAssertNil(probe.memory)
+    }
+
+    func testRealSystemDaemonIsObservedButNotControllable() async throws {
+        guard let label = ProcessInfo.processInfo.environment["IGLANCE_TEST_SYSTEM_LABEL"],
+              !label.isEmpty else {
+            throw XCTSkip("Set IGLANCE_TEST_SYSTEM_LABEL to a running system daemon.")
+        }
+
+        let provider = LaunchdProvider()
+        let binding = ServiceBinding(
+            name: "System",
+            kind: .launchd,
+            launchdLabel: label,
+            readOnly: false,
+            startCommandApproved: true
+        )
+
+        let probe = try await provider.status(for: binding, token: nil)
+        XCTAssertEqual(probe.status.state, "running", probe.status.error ?? "no error")
+        XCTAssertGreaterThan(probe.status.pid ?? 0, 0)
+        XCTAssertGreaterThan(probe.memory?.totalRssBytes ?? 0, 0)
+
+        do {
+            _ = try await provider.start(binding)
+            XCTFail("System daemons must not be controllable without root")
+        } catch let error as ServiceProviderError {
+            guard case .unsupported = error else {
+                return XCTFail("Expected unsupported, got \(error)")
+            }
+        }
+    }
+}
+
+class ProcessParsingTests: XCTestCase {
+    func testParsesElapsedFormats() {
+        XCTAssertEqual(ProcessInspector.parseElapsed("00:00"), 0)
+        XCTAssertEqual(ProcessInspector.parseElapsed("01:02"), 62)
+        XCTAssertEqual(ProcessInspector.parseElapsed("01:02:03"), 3_723)
+        XCTAssertEqual(ProcessInspector.parseElapsed("2-03:04:05"), 183_845)
+        XCTAssertNil(ProcessInspector.parseElapsed("nope"))
+    }
+
+    func testParsesPSSample() {
+        let output = """
+            1  28400 38-11:01:38
+        59044   2672       00:00
+        """
+        let rows = ProcessInspector.parsePSSample(output)
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].pid, 1)
+        XCTAssertEqual(rows[0].rssBytes, 28_400 * 1024)
+        let expectedUptime: Double = 38 * 86_400 + 11 * 3600 + 60 + 38
+        XCTAssertEqual(rows[0].uptimeSec, expectedUptime)
+        XCTAssertEqual(rows[1].pid, 59_044)
+    }
+
+    func testParsesPIDFile() {
+        XCTAssertEqual(ProcessInspector.parsePIDFile("  1234  \n"), 1_234)
+        XCTAssertEqual(ProcessInspector.parsePIDFile("\n\n42\n"), 42)
+        XCTAssertNil(ProcessInspector.parsePIDFile(""))
+        XCTAssertNil(ProcessInspector.parsePIDFile("0\n"))
+        XCTAssertNil(ProcessInspector.parsePIDFile("not a pid\n"))
+    }
+
+    func testParsesIntegerLines() {
+        XCTAssertEqual(ProcessInspector.parseIntegerLines("1\n22\n\n333\n"), [1, 22, 333])
+        XCTAssertEqual(ProcessInspector.parseIntegerLines(""), [])
+    }
+
+    func testPIDFileProviderMeasuresCurrentProcess() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString).pid")
+        try "\(getpid())\n".write(to: file, atomically: true, encoding: .utf8)
+
+        let binding = ServiceBinding(
+            name: "Test Runner",
+            kind: .process,
+            pidFile: file.path,
+            readOnly: true
+        )
+        let probe = try await ProcessProvider().status(for: binding, token: nil)
+
+        XCTAssertEqual(probe.status.state, "running")
+        XCTAssertEqual(probe.status.pid, Int(getpid()))
+        XCTAssertGreaterThan(probe.memory?.totalRssBytes ?? 0, 0)
+        XCTAssertNotNil(probe.status.uptimeSec)
+    }
+
+    func testPatternMatchingFindsProcess() async throws {
+        let marker = UUID().uuidString
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // `sleep 5; true` keeps the shell around (a bare `sleep 5` would be
+        // exec'd, dropping the marker from argv and defeating pgrep -f).
+        process.arguments = ["-c", "sleep 5; true", marker]
+        try process.run()
+        defer { process.terminate() }
+
+        let binding = ServiceBinding(
+            name: "Pattern",
+            kind: .process,
+            processPattern: marker,
+            readOnly: true
+        )
+        let provider = ProcessProvider()
+
+        var probe: ServiceProbeResult?
+        for _ in 0..<30 {
+            probe = try await provider.status(for: binding, token: nil)
+            if probe?.status.state == "running" { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(probe?.status.state, "running")
+        XCTAssertEqual(probe?.status.pid, Int(process.processIdentifier))
+        XCTAssertGreaterThan(probe?.memory?.totalRssBytes ?? 0, 0)
+    }
+
+    func testDescendantsAreIncludedInMemory() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("iGlanceTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let pidFile = directory.appendingPathComponent("worker.pid")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "echo $$ > '\(pidFile.path)'; sleep 3 & wait"]
+        try process.run()
+        defer { process.terminate() }
+
+        let provider = ProcessProvider()
+        let binding = ServiceBinding(
+            name: "Tree",
+            kind: .process,
+            pidFile: pidFile.path,
+            readOnly: true
+        )
+
+        var probe: ServiceProbeResult?
+        for _ in 0..<30 {
+            probe = try await provider.status(for: binding, token: nil)
+            if (probe?.memory?.totalProcesses ?? 0) >= 2 { break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        XCTAssertEqual(probe?.status.state, "running")
+        XCTAssertEqual(probe?.status.pid, Int(process.processIdentifier))
+        XCTAssertGreaterThanOrEqual(probe?.memory?.totalProcesses ?? 0, 2)
+        XCTAssertGreaterThan(probe?.memory?.totalRssBytes ?? 0, 0)
+    }
+}
+
+class CommandProviderTests: XCTestCase {
+    func testExitStatusMeansRunning() async throws {
+        let running = ServiceBinding(name: "OK", kind: .command, readOnly: true, statusCommand: "true")
+        let probe = try await CommandProvider().status(for: running, token: nil)
+        XCTAssertEqual(probe.status.state, "running")
+        XCTAssertNil(probe.status.error)
+    }
+
+    func testNonZeroExitIsOfflineWithStderr() async throws {
+        let failing = ServiceBinding(
+            name: "Bad",
+            kind: .command,
+            readOnly: true,
+            statusCommand: "echo boom >&2; exit 3"
+        )
+        let probe = try await CommandProvider().status(for: failing, token: nil)
+        XCTAssertEqual(probe.status.state, "offline")
+        XCTAssertTrue(probe.status.error?.contains("boom") ?? false)
+    }
+
+    func testJSONStatusIsDecoded() async throws {
+        let json = #"{"state":"running","pid":42,"uptime_sec":12.5,"memory":{"available":true,"total_rss_bytes":2048,"total_processes":1}}"#
+        let binding = ServiceBinding(
+            name: "JSON",
+            kind: .command,
+            readOnly: true,
+            statusCommand: "printf '%s' '\(json)'"
+        )
+        let probe = try await CommandProvider().status(for: binding, token: nil)
+        XCTAssertEqual(probe.status.state, "running")
+        XCTAssertEqual(probe.status.pid, 42)
+        XCTAssertEqual(probe.status.uptimeSec, 12.5)
+        XCTAssertEqual(probe.memory?.totalRssBytes, 2_048)
+    }
+}
+
 class ServiceLauncherTests: XCTestCase {
     private let manifestLine = #"IGLANCE_SERVICE_MANIFEST {"schema":"iglance.service.v1","service":{"id":"demo","name":"Demo"},"base_url":"http://127.0.0.1:9999","endpoints":{"status":"/status"}}"#
 
@@ -1060,6 +1934,12 @@ func runAllTests() {
         ServiceClientTests.self,
         ServiceBindingStoreTests.self,
         ServicesStoreTests.self,
+        ServiceKindMigrationTests.self,
+        ServiceCapabilityTests.self,
+        ServiceKindStoreTests.self,
+        LaunchdParsingTests.self,
+        ProcessParsingTests.self,
+        CommandProviderTests.self,
         ServiceFormattingTests.self,
         ServiceLauncherTests.self,
         UpdateTests.self

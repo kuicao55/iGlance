@@ -69,7 +69,7 @@ struct ServicesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Services")
                     .font(.title3.weight(.semibold))
-                Text("Headless services bound with iglance.service.v1")
+                Text("Manifest, launchd, process, and command services")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -101,7 +101,7 @@ struct ServicesView: View {
                 Text("No services bound")
                     .font(.headline)
 
-                Text("Add a headless service, give it a start command, and iGlance can start it, watch its memory, and stop it.")
+                Text("Bind a manifest service, a launchd job, a process group, or your own commands. iGlance watches status and memory, and can start or stop it when you allow it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

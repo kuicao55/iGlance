@@ -41,13 +41,16 @@ Designed native-first: pure **SwiftUI + AppKit**, no Electron, no web view, no d
 - **SleepDisabled indicator** — see when *another* process is holding your Mac awake
 
 ### 🧩 Services
-- **Bind headless services** — a name, a start command, and an optional API token; works with Gofer and anything else that speaks `iglance.service.v1`
+- **Four service types** — `manifest` (the original `iglance.service.v1` protocol), `launchd`, `process`, and `command`
+- **launchd observation** — bind a LaunchAgent, LaunchDaemon, or `brew services` job by label; iGlance reads its PID, uptime, and RSS without becoming a second supervisor
+- **Process groups** — find a daemon by `pgrep -f` pattern or PID file and sum memory across its children
+- **Custom commands** — status/start/stop commands for anything that does not fit the other three
 - **Manifest handshake** — runs the command, reads its `IGLANCE_SERVICE_MANIFEST` line, and caches `base_url` + endpoints
-- **Start / Stop / Pause / Resume** — drives the service over HTTP once it has introduced itself
+- **Start / Stop / Pause / Resume** — HTTP for manifest services, `launchctl` for launchd, and your approved commands for the rest
 - **Open Panel** — one click opens the service's own web UI in your default browser
 - **Memory by group** — total RSS, per-group breakdown, and a rolling sparkline
 - **Keychain tokens** — tokens never touch `UserDefaults` or the bindings file
-- **Approval gate** — a command never runs until you tick *Allow iGlance to run this command*
+- **Approval gate** — nothing is started, stopped, or executed until you tick the approval switch
 
 ### 🎯 Menu Bar
 - **Dynamic load indicator** — a tiny arc on the menu bar icon grows with system load (weighted average of CPU/GPU/Memory/Temp)
@@ -132,9 +135,20 @@ instructions: [docs/SIGNING.md](docs/SIGNING.md).
 
 ## 🔌 Binding a service (step by step)
 
-A service only needs a **name** and a **start command**. Everything else —
-address, endpoints, auth header, memory breakdown — is discovered from the
-manifest the command prints once the service is ready.
+iGlance can watch four kinds of service. Pick the type at the top of the
+editor:
+
+| Type | Use it for | Needs |
+|---|---|---|
+| **Manifest** | Gofer, Ticket Tracker, or anything that speaks `iglance.service.v1` | A start command that prints `IGLANCE_SERVICE_MANIFEST` |
+| **Launchd** | LaunchAgents, LaunchDaemons, `brew services` jobs, Hermes gateway | The job's label, e.g. `ai.hermes.gateway` |
+| **Process** | Any CLI daemon with a process or PID file | A `pgrep -f` pattern or a PID file |
+| **Command** | Anything else you can script | A status command; start/stop are optional |
+
+launchd bindings start **read-only**, and process/command bindings stay
+observation-only until you add and approve start/stop commands. In read-only
+mode the card shows status, PID, uptime, and memory, but hides **Start** and
+**Stop**, so iGlance never fights launchd's `KeepAlive` or a supervisor.
 
 ### 1. Open the editor
 
@@ -148,32 +162,64 @@ the empty state). The editor opens in the pane itself.
 
 ### 2. Fill in the fields
 
+**All types**
+
 | Field | What to put |
 |---|---|
 | **Name** | Shown on the card, e.g. `Gofer` |
+| **Refresh every Ns** | How often to probe while the Services pane is open. 2–60 s, default 5 s. |
+| **Panel URL** (optional) | The service's web UI. For launchd / process / command this is the only source of the **Open Panel** button; for manifest services it is a fallback below `urls.panel` / `endpoints.panel`. http(s) only, token never added. |
+| **Read-only (observe only)** | launchd / process / command. Hides Start and Stop. On by default for launchd. |
+| **Approval switch** | The execution gate. While off, Start, Stop, and Test stay disabled. Changing the target (command, label, pattern, or status command) switches it off again until you re-approve. |
+
+**Manifest**
+
+| Field | What to put |
+|---|---|
 | **Start command** | The exact line you'd type in Terminal to start (or reuse) the service, e.g. `~/Applications/Gofer/start-gofer.sh start --manifest`. It runs through `/bin/zsh -lc` from your home directory, so `~`, pipes and `&&` all work. **Choose Script…** appends a shell-quoted path for you. |
 | **API token** (optional) | Sent in the header named by the manifest's `auth.header`. Stored in the login Keychain keyed by the binding's UUID — never in the bindings file. Leave blank if the service has no auth. |
-| **Refresh every Ns** | How often to poll `endpoints.status` while the Services pane is open. 2–60 s, default 5 s. |
-| **Allow iGlance to run this command and control the service** | The execution gate. While off, **Test Start**, **Start**, **Pause**, **Resume** and **Stop** are disabled. Changing the command of an existing binding switches it off again until you re-approve. |
+
+**Launchd**
+
+| Field | What to put |
+|---|---|
+| **Launchd label** | The job's label, e.g. `ai.hermes.gateway`. **Choose Loaded Job…** lists non-Apple labels from `launchctl list`. User jobs in `gui/<uid>` are controllable; system LaunchDaemons are observation-only because controlling them requires root. |
+
+Start uses `launchctl kickstart` and requires the job to be loaded. Stop uses
+`launchctl bootout`, so stopping unloads the job — launchd loads it again at
+the next login. iGlance does not bootstrap plists on your behalf.
+
+**Process**
+
+| Field | What to put |
+|---|---|
+| **Match by process** | A literal pattern for `pgrep -f`, e.g. `hermes gateway`. Child processes are included in the memory total. |
+| **…or PID file** | A file containing the PID, e.g. `/tmp/hermes.pid`. Takes precedence when it holds a live PID. |
+| **Start / Stop command** | Optional. Only these commands are ever executed. |
+
+**Command**
+
+| Field | What to put |
+|---|---|
+| **Status command** | Exit `0` means running, non-zero means offline. It may instead print a JSON status object (`state`, `pid`, `uptime_sec`, `memory`). |
+| **Start / Stop command** | Optional. Run through `/bin/zsh -lc` after you approve control. |
 
 ### 3. Test before saving
 
-- **Test Start** runs the command and waits up to **20 s** for the manifest
-  line. On success the sheet reports the service name, version, `base_url`,
-  and endpoint count. On failure it shows the exit status and the tail of
-  stderr. Pressing it while the service is already running is safe — a good
-  start command is idempotent and still prints the manifest.
-- **Test Connection** calls `endpoints.status` with the stored or entered
-  token and reports state, pid and memory. It's the quickest way to check a
-  token: `401` comes back as *unauthorized*.
+- **Manifest:** **Test Start** runs the command and waits up to **20 s** for
+  the manifest line. **Test Connection** calls `endpoints.status` with the
+  stored or entered token and reports state, pid and memory. `401` comes back
+  as *unauthorized*.
+- **Launchd / Process / Command:** **Test Status** probes the service without
+  saving it and reports state, pid, memory, and any probe error.
 
-### 4. Manifest fallback
+### 4. Manifest fallback (manifest only)
 
-If your start command can't print a manifest — a launchd-managed daemon, a
-service that's already running, a script you don't want to modify — expand
-**Manifest (optional)**, paste the `IGLANCE_SERVICE_MANIFEST {...}` line (or
-just the `{...}` JSON), and click **Use Manifest**. iGlance caches `base_url`,
-endpoints and auth on the binding, so polling works without running anything.
+If your start command can't print a manifest — a service that's already
+running, a script you don't want to modify — expand **Manifest (optional)**,
+paste the `IGLANCE_SERVICE_MANIFEST {...}` line (or just the `{...}` JSON),
+and click **Use Manifest**. iGlance caches `base_url`, endpoints and auth on
+the binding, so polling works without running anything.
 
 ### 5. Save
 
@@ -183,15 +229,20 @@ immediately.
 ### What the card shows
 
 - **State** — running / paused / starting / stopping / offline / unauthorized,
-  with uptime, pid and `host:port`; offline cards keep a *last seen* stamp
+  with uptime and pid; manifest cards also show `host:port`, and provider cards
+  show the launchd label, `pgrep` pattern, or status command. Offline cards
+  keep a *last seen* stamp and any probe error.
 - **Memory** — total RSS, a rolling sparkline, and a **N groups** disclosure
   with per-group RSS and process counts
 - **Controls** — **Start**, **Pause** / **Resume**, **Stop**, plus a **⋯** menu
-  with *Edit Service…*, *Toggle Pause* and *Delete Service*
+  with *Edit Service…*, *Toggle Pause* and *Delete Service*. Read-only
+  bindings, and provider bindings without a start/stop command, hide the
+  controls instead of showing dead buttons.
 - **Open Panel** — a Safari button that opens the service's web UI while it is
-  running or paused. It appears only when the manifest or status reports a
-  panel (`endpoints.panel` / `urls.panel`); the browser handles login, and the
-  API token is never put in the URL
+  running or paused. It appears when the binding's **Panel URL** is set on any
+  type; manifest services additionally report one themselves (`endpoints.panel`
+  / `urls.panel`), which wins over the explicit field. The browser handles
+  login, and the API token is never put in the URL
 - **Delete** removes the binding and its Keychain token. It does **not** stop
   the service, and iGlance never starts bound services automatically at launch.
 
@@ -296,7 +347,9 @@ Sources/iGlance/
 
 ## 🧪 Verified
 
-`swift test` runs the unit suite (93 tests).
+`swift test` runs the unit suite (145 tests). Four real-launchd integration tests
+are skipped unless their `IGLANCE_TEST_*_LABEL` environment variables point at
+temporary agents; the rest are deterministic.
 
 - ✅ Build & launch
 - ✅ Menu bar presence (LSUIElement)
@@ -306,7 +359,10 @@ Sources/iGlance/
 - ✅ Sleep assertion toggle + cleanup
 - ✅ Service manifest parsing, 401 / connection-failure handling, memory decoding
 - ✅ Service start/stop/pause/resume against the `iglance.service.v1` protocol
-- ✅ Panel URL resolution (`urls.panel` → `display`/`base` + `endpoints.panel`, http(s) only)
+- ✅ launchd status parsing (`launchctl print`, loaded labels), process matching and `ps` measurement, command status/JSON
+- ✅ Old `services.json` files without `kind` migrate to manifest bindings without data loss
+- ✅ Panel URL resolution (`urls.panel` → `display`/`base` + `endpoints.panel`, then the explicit `panelURL` fallback, http(s) only)
+- ✅ Explicit Panel URL on launchd / process / command cards (Open Panel enabled only while running or paused)
 - ✅ Add / Edit Service draft survives closing the popover and switching sections
 - ✅ GitHub release decoding and numeric version comparison
 - ✅ Update install checks bundle identity and signature before swapping

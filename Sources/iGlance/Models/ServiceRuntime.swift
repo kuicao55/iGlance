@@ -62,7 +62,7 @@ struct ServiceRuntime: Equatable {
 
 // MARK: - Status response
 
-struct ServiceStatusResponse: Decodable {
+struct ServiceStatusResponse: Decodable, Equatable {
     let schema: String?
     let ok: Bool?
     let service: ServiceManifest.Identity?
@@ -76,6 +76,10 @@ struct ServiceStatusResponse: Decodable {
     let auth: ServiceStatusAuth?
     let memory: ServiceMemory?
     let controls: ServiceControls?
+    /// Set by the launchd/process/command providers when a probe succeeds but
+    /// the service is not healthy (for example a launchd job that is loaded
+    /// but not running). Manifest services may also send it.
+    let error: String?
 
     enum CodingKeys: String, CodingKey {
         case schema
@@ -91,6 +95,41 @@ struct ServiceStatusResponse: Decodable {
         case auth
         case memory
         case controls
+        case error
+    }
+
+    /// Synthesized providers need to build a response without going through
+    /// JSON. The decoder keeps working because this is only a memberwise init.
+    init(
+        schema: String? = nil,
+        ok: Bool? = nil,
+        service: ServiceManifest.Identity? = nil,
+        state: String? = nil,
+        paused: Bool? = nil,
+        stopping: Bool? = nil,
+        pid: Int? = nil,
+        startedAt: Date? = nil,
+        uptimeSec: Double? = nil,
+        urls: ServiceStatusURLs? = nil,
+        auth: ServiceStatusAuth? = nil,
+        memory: ServiceMemory? = nil,
+        controls: ServiceControls? = nil,
+        error: String? = nil
+    ) {
+        self.schema = schema
+        self.ok = ok
+        self.service = service
+        self.state = state
+        self.paused = paused
+        self.stopping = stopping
+        self.pid = pid
+        self.startedAt = startedAt
+        self.uptimeSec = uptimeSec
+        self.urls = urls
+        self.auth = auth
+        self.memory = memory
+        self.controls = controls
+        self.error = error
     }
 }
 
